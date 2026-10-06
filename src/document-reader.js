@@ -76,7 +76,7 @@ function extractSeriesNumber(text) {
 
   for (const re of contextualPatterns) {
     const m=upper.match(re);
-    if (m) return { series:m[1].replace(/\s/g,""), document_number:Number(m[2]) };
+    if (m) return { series:m[1].replace(/\s/g,""), document_number:m[2] };
   }
   return { series:null, document_number:null };
 }

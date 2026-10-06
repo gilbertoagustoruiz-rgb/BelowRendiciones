@@ -249,6 +249,62 @@ function refreshExpenseConcepts() {
   producerSelect.value = project ? String(project.producer_id) : "";
 }
 
+async function scanExpenseDocument(file) {
+  if (!file) return;
+
+  const status=form.querySelector("#documentScanStatus");
+  const submit=form.querySelector('button[type="submit"]');
+
+  try {
+    if (status) {
+      status.className="scan-status loading";
+      status.textContent="Leyendo comprobante y detectando datos...";
+    }
+    if (submit) submit.disabled=true;
+
+    const data=new FormData();
+    data.append("document",file);
+    const result=await request(API+"/expenses/scan",{method:"POST",body:data});
+    const fields=result.fields || {};
+
+    const setValue=(name,value)=>{
+      if (value === null || value === undefined || value === "") return;
+      const input=form.querySelector('[name="'+name+'"]');
+      if (input) input.value=String(value);
+    };
+
+    setValue("issuer_ruc",fields.issuer_ruc);
+    setValue("document_type",fields.document_type);
+    setValue("series",fields.series);
+    setValue("document_number",fields.document_number);
+    setValue("issue_date",fields.issue_date);
+    setValue("amount",fields.amount);
+
+    const detected=[
+      fields.issuer_ruc && "RUC",
+      fields.series && "serie",
+      fields.document_number && "número",
+      fields.issue_date && "fecha",
+      fields.amount && "importe",
+    ].filter(Boolean);
+
+    if (status) {
+      const source=result.source==="OCR_IMAGE" ? "foto/OCR" : "PDF";
+      status.className=result.warning ? "scan-status warning" : "scan-status success";
+      status.textContent=detected.length
+        ? "Datos detectados desde "+source+": "+detected.join(", ")+". Revisa la información antes de guardar."
+        : (result.warning || "No se pudieron detectar datos automáticamente. Completa los campos manualmente.");
+    }
+  } catch(error) {
+    if (status) {
+      status.className="scan-status error";
+      status.textContent=error.message;
+    }
+  } finally {
+    if (submit) submit.disabled=false;
+  }
+}
+
 function openForm(row=null) {
   state.editing=row;
   $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVO";
@@ -261,6 +317,7 @@ function openForm(row=null) {
       selectHtml("project_id","Proyecto",state.projects.map((p)=>({value:p.id,label:p.project_code+" · "+p.project_name})),null,true),
       '<div class="field"><label>Concepto del Evento</label><select name="concept_id" required><option value="">Primero selecciona un proyecto...</option></select></div>',
       selectField("producer_id","Productor","producers",null,true),
+      '<div class="field full receipt-upload"><label>PDF o foto del comprobante</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required><div id="documentScanStatus" class="scan-status">Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.</div></div>',
       selectHtml("document_type","Tipo de comprobante",[
         {value:"01",label:"Factura"},{value:"03",label:"Boleta de Venta"}
       ],"01",true),
@@ -268,8 +325,7 @@ function openForm(row=null) {
       inputField("series","Serie","text","",'maxlength="4"'),
       inputField("document_number","Número","number","",'min="1" step="1"'),
       inputField("issue_date","Fecha de Emisión","date",""),
-      inputField("amount","Importe Total (S/)","number","",'min="0.01" step="0.01"'),
-      '<div class="field full"><label>PDF o foto del comprobante</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required></div>'
+      inputField("amount","Importe Total (S/)","number","",'min="0.01" step="0.01"')
     ].join("");
 
     showHelp(state.sunatConfigured
@@ -278,6 +334,7 @@ function openForm(row=null) {
     );
 
     form.querySelector('[name="project_id"]').addEventListener("change",refreshExpenseConcepts);
+    form.querySelector('[name="document"]').addEventListener("change",(event)=>scanExpenseDocument(event.target.files?.[0]));
     modal.showModal();
     return;
   }

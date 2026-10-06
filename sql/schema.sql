@@ -139,7 +139,112 @@ WHERE document_number ~ '^[0-9]+$'
 
 ALTER TABLE expense_reports
   ADD CONSTRAINT expense_reports_document_number_check
-  CHECK (document_number ~ '^[0-9]+$') NOT VALID;
+  CHECK (document_number ~ '^[0-9]+
+CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
+CREATE INDEX IF NOT EXISTS idx_projects_producer ON projects(producer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_subproducer ON projects(subproducer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_executive ON projects(executive_id);
+
+CREATE INDEX IF NOT EXISTS idx_expenses_project ON expense_reports(project_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_concept ON expense_reports(concept_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_producer ON expense_reports(producer_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_validation ON expense_reports(validation_status);
+
+CREATE INDEX IF NOT EXISTS idx_advances_project ON advance_reports(project_id);
+CREATE INDEX IF NOT EXISTS idx_advances_concept ON advance_reports(concept_id);
+CREATE INDEX IF NOT EXISTS idx_advances_producer ON advance_reports(producer_id);
+CREATE INDEX IF NOT EXISTS idx_advances_validation ON advance_reports(validation_status);
+
+INSERT INTO event_concepts (name) VALUES
+  ('PRODUCCIÓN TÉCNICA'),
+  ('ESTRUCTURAS Y MOBILIARIO'),
+  ('CATERING'),
+  ('IMPLEMENTACIONES'),
+  ('DISEÑO Y PRODUCCIÓN')
+ON CONFLICT (name) DO NOTHING;
+
+COMMIT;
+) NOT VALID;
+
+
+CREATE TABLE IF NOT EXISTS advance_reports (
+  id BIGSERIAL PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  concept_id BIGINT NOT NULL,
+  producer_id BIGINT NOT NULL REFERENCES producers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  document_type VARCHAR(2) NOT NULL CHECK (document_type IN ('01','03')),
+  issuer_ruc VARCHAR(11) NOT NULL CHECK (issuer_ruc ~ '^[0-9]{11}
+CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
+CREATE INDEX IF NOT EXISTS idx_projects_producer ON projects(producer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_subproducer ON projects(subproducer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_executive ON projects(executive_id);
+
+CREATE INDEX IF NOT EXISTS idx_expenses_project ON expense_reports(project_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_concept ON expense_reports(concept_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_producer ON expense_reports(producer_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_validation ON expense_reports(validation_status);
+
+INSERT INTO event_concepts (name) VALUES
+  ('PRODUCCIÓN TÉCNICA'),
+  ('ESTRUCTURAS Y MOBILIARIO'),
+  ('CATERING'),
+  ('IMPLEMENTACIONES'),
+  ('DISEÑO Y PRODUCCIÓN')
+ON CONFLICT (name) DO NOTHING;
+
+COMMIT;
+),
+  series VARCHAR(4) NOT NULL,
+  document_number VARCHAR(20) NOT NULL,
+  issue_date DATE NOT NULL,
+  amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  file_name VARCHAR(255) NOT NULL,
+  file_mime VARCHAR(120) NOT NULL,
+  file_storage VARCHAR(20) NOT NULL DEFAULT 'local',
+  file_key VARCHAR(700) NOT NULL,
+  validation_status VARCHAR(30) NOT NULL DEFAULT 'PENDIENTE',
+  sunat_estado_cp VARCHAR(10),
+  sunat_estado_ruc VARCHAR(10),
+  sunat_cond_domi_ruc VARCHAR(10),
+  sunat_message TEXT,
+  sunat_observations JSONB NOT NULL DEFAULT '[]'::jsonb,
+  sunat_response JSONB,
+  validated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT fk_advance_project_concept
+    FOREIGN KEY (project_id, concept_id)
+    REFERENCES project_event_concepts(project_id, concept_id)
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT uq_advance_document
+    UNIQUE (issuer_ruc, document_type, series, document_number)
+);
+
+ALTER TABLE advance_reports
+  DROP CONSTRAINT IF EXISTS advance_reports_document_number_check;
+
+ALTER TABLE advance_reports
+  ADD CONSTRAINT advance_reports_document_number_check
+  CHECK (document_number ~ '^[0-9]+
+CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
+CREATE INDEX IF NOT EXISTS idx_projects_producer ON projects(producer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_subproducer ON projects(subproducer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_executive ON projects(executive_id);
+
+CREATE INDEX IF NOT EXISTS idx_expenses_project ON expense_reports(project_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_concept ON expense_reports(concept_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_producer ON expense_reports(producer_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_validation ON expense_reports(validation_status);
+
+INSERT INTO event_concepts (name) VALUES
+  ('PRODUCCIÓN TÉCNICA'),
+  ('ESTRUCTURAS Y MOBILIARIO'),
+  ('CATERING'),
+  ('IMPLEMENTACIONES'),
+  ('DISEÑO Y PRODUCCIÓN')
+ON CONFLICT (name) DO NOTHING;
+
+COMMIT;
+) NOT VALID;
 
 CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
 CREATE INDEX IF NOT EXISTS idx_projects_producer ON projects(producer_id);

@@ -6,6 +6,7 @@ import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, validateCpe } from "./sunat.js";
 import { saveEvidence, sendEvidence } from "./storage.js";
+import { readReceiptDocument } from "./document-reader.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -349,6 +350,18 @@ async function runSunatValidation(expenseId) {
     return { configured: true, status: "ERROR", error: error.message, data: payload };
   }
 }
+
+app.post("/api/expenses/scan", upload.single("document"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Debes adjuntar un PDF o foto del comprobante." });
+
+  try {
+    const result = await readReceiptDocument(req.file);
+    res.json(result);
+  } catch (error) {
+    console.error("Error leyendo comprobante:", error);
+    res.status(500).json({ error: "No se pudo leer automáticamente el documento. Puedes completar los campos manualmente." });
+  }
+});
 
 app.post("/api/expenses", upload.single("document"), async (req, res) => {
   const validation = validateExpenseInput(req.body);

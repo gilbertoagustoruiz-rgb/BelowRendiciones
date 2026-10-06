@@ -152,7 +152,7 @@ function render() {
   if (state.module === "projects") {
     thead.innerHTML = `<tr>
       <th>Código</th><th>Proyecto</th><th>Cliente</th><th>Servicio</th><th>Lugar</th>
-      <th>Fechas</th><th>Comisión</th><th>Productor</th><th>Sub Productor</th>
+      <th>Fechas</th><th>Comisión</th><th>Moneda</th><th>Tipo Cambio</th><th>Productor</th><th>Sub Productor</th>
       <th>Ejecutivo</th><th>Conceptos</th><th>Acciones</th>
     </tr>`;
     tbody.innerHTML = rows.length ? rows.map((r) => `<tr>
@@ -160,14 +160,17 @@ function render() {
       <td>${esc(r.project_name)}<br><small>Contacto: ${esc(r.contact_name)}</small></td>
       <td>${esc(r.client_name)}<br><small>${esc(r.client_ruc)}</small></td>
       <td>${esc(r.service_type)}</td><td>${esc(r.event_location)}</td><td>${r.number_of_dates}</td>
-      <td>S/ ${Number(r.commission || 0).toFixed(2)}</td><td>${esc(r.producer_name)}</td>
+      <td>${Number(r.commission || 0).toFixed(2)}%</td>
+      <td>${r.currency === "USD" ? "Dólares (USD)" : "Soles (PEN)"}</td>
+      <td>${r.currency === "USD" ? Number(r.exchange_rate || 0).toFixed(4) : "—"}</td>
+      <td>${esc(r.producer_name)}</td>
       <td>${esc(r.subproducer_name || "—")}</td><td>${esc(r.executive_name)}</td>
       <td>${(r.concepts || []).map((c) => `<span class="badge">${esc(c.name)}</span>`).join("") || "—"}</td>
       <td class="actions">
         <button class="action-btn" data-edit="${r.id}">Editar</button>
         <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
       </td>
-    </tr>`).join("") : emptyRow(12);
+    </tr>`).join("") : emptyRow(14);
   } else if (state.module === "expenses") {
     thead.innerHTML = `<tr>
       <th>Proyecto</th><th>Concepto</th><th>Productor</th><th>Comprobante</th>
@@ -289,7 +292,12 @@ function openForm(row=null) {
       inputField("project_name","Nombre de Proyecto","text",row?.project_name),
       inputField("event_location","Lugar del evento","text",row?.event_location),
       inputField("number_of_dates","Número de Fechas","number",row?.number_of_dates||1,'min="1" step="1"'),
-      inputField("commission","Comisión (S/)","number",row?.commission||0,'min="0" step="0.01"'),
+      inputField("commission","Comisión (%)","number",row?.commission||0,'min="0" max="100" step="0.01"'),
+      selectHtml("currency","Tipo de Moneda",[
+        {value:"PEN",label:"Soles (PEN)"},
+        {value:"USD",label:"Dólares (USD)"}
+      ],row?.currency || "PEN",true),
+      '<div class="field" id="exchangeRateField"><label>Tipo de Cambio</label><input name="exchange_rate" type="number" min="0.0001" step="0.0001" value="'+esc(row?.exchange_rate ?? "")+'" placeholder="Ej. 3.7500"></div>',
       selectField("producer_id","Productor","producers",row?.producer_id),
       selectField("subproducer_id","Sub Productor","subproducers",row?.subproducer_id,false),
       selectField("executive_id","Ejecutivo","executives",row?.executive_id),
@@ -303,6 +311,25 @@ function openForm(row=null) {
   } else {
     $("#formFields").innerHTML=fields[state.module].map(([key,label,type])=>inputField(key,label,type,row?.[key]||"")).join("");
   }
+  if (state.module === "projects") {
+    const currencySelect = form.querySelector('[name="currency"]');
+    const exchangeInput = form.querySelector('[name="exchange_rate"]');
+    const exchangeField = $("#exchangeRateField");
+
+    const syncCurrency = () => {
+      const isUsd = currencySelect?.value === "USD";
+      if (exchangeField) exchangeField.style.display = isUsd ? "" : "none";
+      if (exchangeInput) {
+        exchangeInput.required = isUsd;
+        exchangeInput.disabled = !isUsd;
+        if (!isUsd) exchangeInput.value = "";
+      }
+    };
+
+    currencySelect?.addEventListener("change", syncCurrency);
+    syncCurrency();
+  }
+
   modal.showModal();
 }
 

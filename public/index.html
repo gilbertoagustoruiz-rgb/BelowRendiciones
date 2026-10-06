@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a1f3f" />
+  <title>Below Rendiciones</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">B</div>
+      <div><strong>Below</strong><span>Rendiciones</span></div>
+    </div>
+    <nav id="nav"></nav>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">GESTIÓN DE EVENTOS</p>
+        <h1 id="pageTitle">Proyectos</h1>
+      </div>
+      <button class="primary" id="newBtn">+ Nuevo registro</button>
+    </header>
+
+    <section class="stats" id="stats"></section>
+
+    <section class="card">
+      <div class="card-head">
+        <input id="search" type="search" placeholder="Buscar en todos los campos..." />
+        <span id="countLabel"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead id="thead"></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="modal">
+    <form id="recordForm">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow" id="modalEyebrow">NUEVO</p>
+          <h2 id="modalTitle">Registro</h2>
+        </div>
+        <button type="button" class="icon-btn" id="closeModal" aria-label="Cerrar">×</button>
+      </div>
+      <div id="formFields" class="form-grid"></div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="cancelBtn">Cancelar</button>
+        <button type="submit" class="primary">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

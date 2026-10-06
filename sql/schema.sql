@@ -1,0 +1,74 @@
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS clients (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(180) NOT NULL,
+  ruc VARCHAR(11) NOT NULL UNIQUE CHECK (ruc ~ '^[0-9]{11}$'),
+  responsible_person VARCHAR(180) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS producers (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(180) NOT NULL,
+  dni VARCHAR(8) NOT NULL UNIQUE CHECK (dni ~ '^[0-9]{8}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS subproducers (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(180) NOT NULL,
+  dni VARCHAR(8) NOT NULL UNIQUE CHECK (dni ~ '^[0-9]{8}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS executives (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(180) NOT NULL,
+  dni VARCHAR(8) NOT NULL UNIQUE CHECK (dni ~ '^[0-9]{8}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS event_concepts (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(180) NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id BIGSERIAL PRIMARY KEY,
+  client_id BIGINT NOT NULL REFERENCES clients(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  contact_name VARCHAR(180) NOT NULL,
+  service_type VARCHAR(180) NOT NULL,
+  project_code VARCHAR(60) NOT NULL UNIQUE,
+  project_name VARCHAR(220) NOT NULL,
+  event_location VARCHAR(250) NOT NULL,
+  number_of_dates INTEGER NOT NULL CHECK (number_of_dates > 0),
+  commission NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (commission >= 0),
+  producer_id BIGINT NOT NULL REFERENCES producers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  subproducer_id BIGINT REFERENCES subproducers(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  executive_id BIGINT NOT NULL REFERENCES executives(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS project_event_concepts (
+  project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  concept_id BIGINT NOT NULL REFERENCES event_concepts(id) ON DELETE RESTRICT,
+  PRIMARY KEY (project_id, concept_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
+CREATE INDEX IF NOT EXISTS idx_projects_producer ON projects(producer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_subproducer ON projects(subproducer_id);
+CREATE INDEX IF NOT EXISTS idx_projects_executive ON projects(executive_id);
+
+INSERT INTO event_concepts (name) VALUES
+  ('PRODUCCIÓN TÉCNICA'),
+  ('ESTRUCTURAS Y MOBILIARIO'),
+  ('CATERING'),
+  ('IMPLEMENTACIONES'),
+  ('DISEÑO Y PRODUCCIÓN')
+ON CONFLICT (name) DO NOTHING;
+
+COMMIT;

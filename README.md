@@ -1,96 +1,75 @@
 # Below Rendiciones
 
-Aplicativo web para la gestión de proyectos y tablas maestras de Below.
+Aplicativo web para gestión de proyectos, conceptos de evento y rendición de gastos con comprobantes.
 
-## Primera versión
-
-Incluye:
+## Módulos
 
 - Proyectos
+- Rendiciones
 - Clientes
 - Productores
 - Sub Productores
 - Ejecutivos
 - Conceptos de Eventos
 
-Cada módulo permite crear, buscar, editar y eliminar registros.
+## Rendiciones y SUNAT
 
-## Relaciones
+Cada rendición queda vinculada a:
 
-Un proyecto se relaciona con:
+- Proyecto
+- Concepto asignado al proyecto
+- Productor del proyecto
+- Factura o Boleta
+- Archivo original PDF/JPG/PNG/WEBP
+- Datos del comprobante
+- Resultado de validación SUNAT
 
-- 1 Cliente
-- 1 Productor
-- 0 o 1 Sub Productor
-- 1 Ejecutivo
-- 0 o varios Conceptos de Evento
+Al guardar una rendición, el backend intenta validar automáticamente el comprobante mediante la API oficial de Consulta Integrada de Validez de Comprobante de Pago de SUNAT.
 
-Las relaciones están protegidas por claves foráneas PostgreSQL.
+La respuesta se conserva en PostgreSQL para auditoría, junto con:
 
-## Conceptos iniciales
+- estado del comprobante
+- estado del RUC emisor
+- condición domiciliaria
+- observaciones
+- fecha de validación
 
-- PRODUCCIÓN TÉCNICA
-- ESTRUCTURAS Y MOBILIARIO
-- CATERING
-- IMPLEMENTACIONES
-- DISEÑO Y PRODUCCIÓN
+### Credenciales SUNAT
 
-## Tecnología
+Se requieren credenciales generadas desde SUNAT Operaciones en Línea (SOL):
 
-- Node.js 20+
-- Express
-- PostgreSQL
-- HTML/CSS/JavaScript
+```env
+SUNAT_CLIENT_ID=
+SUNAT_CLIENT_SECRET=
+SUNAT_QUERY_RUC=
+```
 
-## Ejecutar localmente
+Si no están configuradas, el comprobante se guarda como `PENDIENTE_CONFIGURACION` y puede volver a validarse luego.
 
-1. Instalar dependencias:
+## Archivos
+
+Con DigitalOcean Spaces configurado, las evidencias se guardan en Spaces:
+
+```env
+SPACES_ENDPOINT=https://sfo3.digitaloceanspaces.com
+SPACES_REGION=sfo3
+SPACES_BUCKET=
+SPACES_KEY=
+SPACES_SECRET=
+```
+
+Sin Spaces, durante desarrollo se guardan en `uploads/`.
+
+## Ejecutar
 
 ```bash
 npm install
-```
-
-2. Copiar `.env.example` a `.env` y configurar `DATABASE_URL`.
-
-3. Crear tablas:
-
-```bash
 npm run db:init
-```
-
-4. Iniciar:
-
-```bash
 npm run dev
 ```
 
-5. Abrir:
+Abrir `http://localhost:3000`.
 
-```
-http://localhost:3000
-```
+## Importante
 
-## Estructura SQL
-
-`sql/schema.sql` crea de forma no destructiva:
-
-- clients
-- producers
-- subproducers
-- executives
-- event_concepts
-- projects
-- project_event_concepts
-
-## Próxima etapa posible
-
-La base está preparada para agregar:
-
-- Rendiciones por proyecto
-- Facturas y boletas
-- Consulta y validación SUNAT
-- Evidencias y documentos
-- Aprobaciones
-- Usuarios y roles
-- Dashboard financiero
-- Despliegue en DigitalOcean
+La carga del PDF o foto funciona como evidencia y activa la validación. En esta versión, los datos tributarios del comprobante (RUC, serie, número, fecha e importe) se registran en el formulario y son los que se envían a SUNAT. La lectura OCR automática de fotos/PDF puede añadirse como siguiente capa sin modificar el modelo de rendiciones.

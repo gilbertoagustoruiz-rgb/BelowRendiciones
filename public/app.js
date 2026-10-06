@@ -331,7 +331,7 @@ function openForm(row=null) {
       ],"01",true),
       inputField("issuer_ruc","RUC del Emisor","text","",'inputmode="numeric" maxlength="11" pattern="\\d{11}"'),
       inputField("series","Serie","text","",'maxlength="4"'),
-      inputField("document_number","Número","number","",'min="1" step="1"'),
+      inputField("document_number","Número","text","",'inputmode="numeric" maxlength="20" pattern="\\d+" placeholder="Ej. 00000083"'),
       inputField("issue_date","Fecha de Emisión","date",""),
       inputField("amount","Importe Total (S/)","number","",'min="0.01" step="0.01"')
     ].join("");

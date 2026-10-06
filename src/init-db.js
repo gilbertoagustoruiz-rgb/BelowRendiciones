@@ -1,22 +1,10 @@
 import "dotenv/config";
-import fs from "node:fs/promises";
-import path from "node:path";
+import { ensureSchema } from "./schema-init.js";
 import { pool } from "./db.js";
 
 async function main() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL no está configurada.");
-  }
-
-  const schemaPath = path.resolve("sql/schema.sql");
-  const sql = await fs.readFile(schemaPath, "utf8");
-
   console.log("Conectando a PostgreSQL...");
-  await pool.query("SELECT 1");
-  console.log("Conexión OK. Ejecutando sql/schema.sql...");
-
-  await pool.query(sql);
-
+  await ensureSchema();
   console.log("Base inicializada correctamente.");
   console.log("Tablas y conceptos creados/verificados sin borrar información existente.");
 }

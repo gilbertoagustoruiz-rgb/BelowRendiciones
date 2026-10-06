@@ -111,3 +111,24 @@ dialog::backdrop { background:rgba(5,16,32,.58); }
   .form-grid,.checkbox-grid { grid-template-columns:1fr; }
   .field.full { grid-column:auto; }
 }
+
+.receipt-upload {
+  padding: 14px;
+  border: 1px dashed #b8c3d2;
+  border-radius: 12px;
+  background: #fafbfd;
+}
+.scan-status {
+  margin-top: 9px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: #edf2f8;
+  color: #5a6678;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.scan-status.loading { background: #eef4fb; color: #2f5f95; }
+.scan-status.success { background: #e5f2e9; color: #347052; }
+.scan-status.warning { background: #f8eed8; color: #8b651d; }
+.scan-status.error { background: #f7e4e4; color: #9d3737; }
+button:disabled { opacity: .55; cursor: not-allowed; }

@@ -144,6 +144,14 @@ function statusBadge(status) {
   return `<span class="status ${value.toLowerCase().replaceAll("_","-")}">${esc(value.replaceAll("_"," "))}</span>`;
 }
 
+function formatDateDisplay(value) {
+  if (!value) return "—";
+  const raw=String(value);
+  const match=raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return esc(raw);
+  return match[3]+"/"+match[2]+"/"+match[1];
+}
+
 function render() {
   renderStats();
   const rows = filteredRows();
@@ -182,7 +190,7 @@ function render() {
       <td>${esc(r.producer_name)}</td>
       <td>${r.document_type === "01" ? "FACTURA" : "BOLETA"}<br>
         <strong>${esc(r.series)}-${esc(r.document_number)}</strong><br><small>RUC ${esc(r.issuer_ruc)}</small></td>
-      <td>${esc(String(r.issue_date).slice(0,10))}</td>
+      <td>${formatDateDisplay(r.issue_date)}</td>
       <td>S/ ${Number(r.amount).toFixed(2)}</td>
       <td><a class="file-link" target="_blank" href="${API}/expenses/${r.id}/file">Abrir documento</a></td>
       <td>${statusBadge(r.validation_status)}</td>

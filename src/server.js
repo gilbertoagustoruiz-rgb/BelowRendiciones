@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import "dotenv/config";
+import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, validateCpe } from "./sunat.js";
 import { saveEvidence, sendEvidence } from "./storage.js";
@@ -413,4 +414,15 @@ app.use((error, _req, res, next) => {
 app.use("/api", (_req, res) => res.status(404).json({ error: "Ruta no encontrada." }));
 app.get("*", (_req, res) => res.sendFile("index.html", { root: "public" }));
 
-app.listen(PORT, () => console.log("Below Rendiciones activo en puerto " + PORT));
+async function start() {
+  try {
+    await ensureSchema();
+    app.listen(PORT, () => console.log("Below Rendiciones activo en puerto " + PORT));
+  } catch (error) {
+    console.error("No se pudo inicializar la base de datos:");
+    console.error(error);
+    process.exit(1);
+  }
+}
+
+start();

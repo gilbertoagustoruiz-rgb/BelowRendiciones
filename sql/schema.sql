@@ -78,13 +78,9 @@ ALTER TABLE projects ADD CONSTRAINT projects_exchange_rate_check
   );
 
 ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_commission_check;
-DO $
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM projects WHERE commission < 0 OR commission > 100) THEN
-    ALTER TABLE projects
-      ADD CONSTRAINT projects_commission_check CHECK (commission >= 0 AND commission <= 100);
-  END IF;
-END $;
+ALTER TABLE projects
+  ADD CONSTRAINT projects_commission_check
+  CHECK (commission >= 0 AND commission <= 100) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS project_event_concepts (
   project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

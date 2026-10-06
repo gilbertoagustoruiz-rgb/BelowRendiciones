@@ -290,7 +290,7 @@ function validateExpenseInput(body) {
   if (!["01","03"].includes(String(body.document_type))) return "Tipo de comprobante inválido.";
   if (!/^\d{11}$/.test(String(body.issuer_ruc))) return "El RUC emisor debe tener 11 dígitos.";
   if (!/^[A-Za-z0-9]{1,4}$/.test(String(body.series))) return "La serie debe tener hasta 4 caracteres.";
-  if (!Number.isInteger(Number(body.document_number)) || Number(body.document_number) < 1) return "Número de comprobante inválido.";
+  if (!/^\d{1,20}$/.test(String(body.document_number || "").trim())) return "Número de comprobante inválido.";
   if (Number(body.amount) <= 0) return "El importe debe ser mayor a 0.";
   return null;
 }
@@ -396,7 +396,7 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
       [
         Number(req.body.project_id), Number(req.body.concept_id), Number(req.body.producer_id),
         String(req.body.document_type), String(req.body.issuer_ruc).trim(),
-        String(req.body.series).trim().toUpperCase(), Number(req.body.document_number),
+        String(req.body.series).trim().toUpperCase(), String(req.body.document_number).trim(),
         req.body.issue_date, Number(req.body.amount), req.file.originalname, req.file.mimetype,
         stored.storage, stored.key,
       ]

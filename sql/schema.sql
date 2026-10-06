@@ -44,13 +44,41 @@ CREATE TABLE IF NOT EXISTS projects (
   project_name VARCHAR(220) NOT NULL,
   event_location VARCHAR(250) NOT NULL,
   number_of_dates INTEGER NOT NULL CHECK (number_of_dates > 0),
-  commission NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (commission >= 0),
+  commission NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK (commission >= 0 AND commission <= 100),
+  currency VARCHAR(3) NOT NULL DEFAULT 'PEN' CHECK (currency IN ('PEN','USD')),
+  exchange_rate NUMERIC(10,4),
   producer_id BIGINT NOT NULL REFERENCES producers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   subproducer_id BIGINT REFERENCES subproducers(id) ON UPDATE CASCADE ON DELETE SET NULL,
   executive_id BIGINT NOT NULL REFERENCES executives(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'PEN',
+  ADD COLUMN IF NOT EXISTS exchange_rate NUMERIC(10,4);
+
+UPDATE projects
+SET currency = 'PEN'
+WHERE currency IS NULL OR currency NOT IN ('PEN','USD');
+
+UPDATE projects
+SET exchange_rate = NULL
+WHERE currency = 'PEN';
+
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_currency_check;
+ALTER TABLE projects ADD CONSTRAINT projects_currency_check CHECK (currency IN ('PEN','USD'));
+
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_exchange_rate_check;
+ALTER TABLE projects ADD CONSTRAINT projects_exchange_rate_check
+  CHECK (
+    (currency = 'PEN' AND exchange_rate IS NULL)
+    OR
+    (currency = 'USD' AND exchange_rate IS NOT NULL AND exchange_rate > 0)
+  );
+
+ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_commission_check;
+ALTER TABLE projects ADD CONSTRAINT projects_commission_check CHECK (commission >= 0 AND commission <= 100);
 
 CREATE TABLE IF NOT EXISTS project_event_concepts (
   project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

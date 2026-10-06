@@ -408,6 +408,94 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
   } catch (error) { dbError(res, error); }
 });
 
+app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
+  const validation = validateExpenseInput(req.body);
+  if (validation) return res.status(400).json({ error: validation });
+
+  try {
+    const current = await query("SELECT * FROM expense_reports WHERE id=$1", [req.params.id]);
+    if (!current.rows[0]) return res.status(404).json({ error: "Rendición no encontrada." });
+
+    const projectCheck = await query(
+      "SELECT id, producer_id FROM projects WHERE id=$1",
+      [req.body.project_id]
+    );
+    if (!projectCheck.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
+    if (Number(projectCheck.rows[0].producer_id) !== Number(req.body.producer_id)) {
+      return res.status(400).json({ error: "El productor seleccionado no corresponde al proyecto." });
+    }
+
+    const linkCheck = await query(
+      "SELECT 1 FROM project_event_concepts WHERE project_id=$1 AND concept_id=$2",
+      [req.body.project_id, req.body.concept_id]
+    );
+    if (!linkCheck.rows[0]) {
+      return res.status(400).json({ error: "El concepto seleccionado no está asignado a este proyecto." });
+    }
+
+    let fileName = current.rows[0].file_name;
+    let fileMime = current.rows[0].file_mime;
+    let fileStorage = current.rows[0].file_storage;
+    let fileKey = current.rows[0].file_key;
+
+    if (req.file) {
+      const stored = await saveEvidence(req.file);
+      fileName = req.file.originalname;
+      fileMime = req.file.mimetype;
+      fileStorage = stored.storage;
+      fileKey = stored.key;
+    }
+
+    await query(
+      `UPDATE expense_reports SET
+        project_id=$1,
+        concept_id=$2,
+        producer_id=$3,
+        document_type=$4,
+        issuer_ruc=$5,
+        series=$6,
+        document_number=$7,
+        issue_date=$8,
+        amount=$9,
+        file_name=$10,
+        file_mime=$11,
+        file_storage=$12,
+        file_key=$13,
+        validation_status='PENDIENTE',
+        sunat_estado_cp=NULL,
+        sunat_estado_ruc=NULL,
+        sunat_cond_domi_ruc=NULL,
+        sunat_message=NULL,
+        sunat_observations='[]'::jsonb,
+        sunat_response=NULL,
+        validated_at=NULL
+       WHERE id=$14`,
+      [
+        Number(req.body.project_id),
+        Number(req.body.concept_id),
+        Number(req.body.producer_id),
+        String(req.body.document_type),
+        String(req.body.issuer_ruc).trim(),
+        String(req.body.series).trim().toUpperCase(),
+        String(req.body.document_number).trim(),
+        req.body.issue_date,
+        Number(req.body.amount),
+        fileName,
+        fileMime,
+        fileStorage,
+        fileKey,
+        req.params.id,
+      ]
+    );
+
+    const validationResult = await runSunatValidation(req.params.id);
+    const finalRow = await query(expenseSelect + " WHERE er.id=$1", [req.params.id]);
+    res.json({ row: finalRow.rows[0], validation: validationResult });
+  } catch (error) {
+    dbError(res, error);
+  }
+});
+
 app.post("/api/expenses/:id/validate", async (req, res) => {
   try {
     const result = await runSunatValidation(req.params.id);

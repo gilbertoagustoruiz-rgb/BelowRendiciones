@@ -163,7 +163,12 @@ function validateProject(body) {
   const missing = requiredError(body, fields);
   if (missing) return missing;
   if (!Number.isInteger(Number(body.number_of_dates)) || Number(body.number_of_dates) < 1) return "Número de fechas debe ser un entero mayor o igual a 1.";
-  if (Number(body.commission || 0) < 0) return "La comisión no puede ser negativa.";
+  const commission = Number(body.commission || 0);
+  if (commission < 0 || commission > 100) return "La comisión debe estar entre 0% y 100%.";
+  if (!["PEN","USD"].includes(String(body.currency || "PEN"))) return "Tipo de moneda inválido.";
+  if (String(body.currency || "PEN") === "USD" && Number(body.exchange_rate) <= 0) {
+    return "Debes ingresar un tipo de cambio mayor a 0 cuando la moneda es Dólares.";
+  }
   return null;
 }
 
@@ -179,8 +184,13 @@ function projectValues(body) {
   return [
     Number(body.client_id), String(body.contact_name).trim(), String(body.service_type).trim(),
     String(body.project_code).trim(), String(body.project_name).trim(), String(body.event_location).trim(),
-    Number(body.number_of_dates), Number(body.commission || 0), Number(body.producer_id),
-    body.subproducer_id ? Number(body.subproducer_id) : null, Number(body.executive_id),
+    Number(body.number_of_dates),
+    Number(body.commission || 0),
+    String(body.currency || "PEN"),
+    String(body.currency || "PEN") === "USD" ? Number(body.exchange_rate) : null,
+    Number(body.producer_id),
+    body.subproducer_id ? Number(body.subproducer_id) : null,
+    Number(body.executive_id),
   ];
 }
 
@@ -193,8 +203,8 @@ app.post("/api/projects", async (req, res) => {
     const result = await client.query(
       `INSERT INTO projects
        (client_id, contact_name, service_type, project_code, project_name, event_location,
-        number_of_dates, commission, producer_id, subproducer_id, executive_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        number_of_dates, commission, currency, exchange_rate, producer_id, subproducer_id, executive_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       projectValues(req.body)
     );
     await replaceConcepts(client, result.rows[0].id, req.body.concept_ids);
@@ -215,9 +225,9 @@ app.put("/api/projects/:id", async (req, res) => {
     const result = await client.query(
       `UPDATE projects SET
        client_id=$1, contact_name=$2, service_type=$3, project_code=$4, project_name=$5,
-       event_location=$6, number_of_dates=$7, commission=$8, producer_id=$9,
-       subproducer_id=$10, executive_id=$11, updated_at=NOW()
-       WHERE id=$12 RETURNING *`, values
+       event_location=$6, number_of_dates=$7, commission=$8, currency=$9, exchange_rate=$10,
+       producer_id=$11, subproducer_id=$12, executive_id=$13, updated_at=NOW()
+       WHERE id=$14 RETURNING *`, values
     );
     if (!result.rows[0]) {
       await client.query("ROLLBACK");

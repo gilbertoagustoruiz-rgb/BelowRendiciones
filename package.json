@@ -8,7 +8,7 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "db:init": "node src/init-db.js",
-    "check": "node --check src/server.js && node --check src/db.js && node --check src/sunat.js && node --check src/storage.js && node --check src/init-db.js && node --check public/app.js"
+    "check": "node --check src/server.js && node --check src/db.js && node --check src/sunat.js && node --check src/storage.js && node --check src/schema-init.js && node --check src/init-db.js && node --check public/app.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.744.0",

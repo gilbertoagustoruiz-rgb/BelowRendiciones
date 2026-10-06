@@ -53,12 +53,32 @@ async function getSunatToken() {
 }
 
 function formatDateForSunat(value) {
-  const date = new Date(value + "T00:00:00");
-  if (Number.isNaN(date.getTime())) throw new Error("Fecha de emisión inválida.");
+  if (value === null || value === undefined) {
+    throw new Error("Fecha de emisión inválida.");
+  }
+
+  const raw = String(value).trim();
+
+  let match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const [, year, month, day] = match;
+    return day + "/" + month + "/" + year;
+  }
+
+  match = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (match) {
+    return raw;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Fecha de emisión inválida.");
+  }
+
   return [
-    String(date.getDate()).padStart(2, "0"),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    date.getFullYear(),
+    String(date.getUTCDate()).padStart(2, "0"),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    date.getUTCFullYear(),
   ].join("/");
 }
 
@@ -73,7 +93,7 @@ export async function validateCpe(expense) {
     codComp: String(expense.document_type),
     numeroSerie: String(expense.series).toUpperCase(),
     numero: Number(expense.document_number),
-    fechaEmision: formatDateForSunat(String(expense.issue_date).slice(0, 10)),
+    fechaEmision: formatDateForSunat(expense.issue_date),
     monto: Number(expense.amount),
   };
 

@@ -196,6 +196,7 @@ function render() {
       <td>${statusBadge(r.validation_status)}</td>
       <td><small>CP: ${esc(r.sunat_estado_cp ?? "—")} · RUC: ${esc(r.sunat_estado_ruc ?? "—")} · Domicilio: ${esc(r.sunat_cond_domi_ruc ?? "—")}<br>${esc(r.sunat_message || "")}</small></td>
       <td class="actions">
+        <button class="action-btn" data-edit="${r.id}">Editar</button>
         <button class="action-btn" data-validate="${r.id}">Validar SUNAT</button>
         <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
       </td>
@@ -320,28 +321,47 @@ function openForm(row=null) {
   showHelp("");
 
   if (state.module === "expenses") {
-    $("#modalEyebrow").textContent="NUEVA";
+    $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVA";
+
+    const selectedProject = row
+      ? state.projects.find((p)=>Number(p.id)===Number(row.project_id))
+      : null;
+
     $("#formFields").innerHTML = [
-      selectHtml("project_id","Proyecto",state.projects.map((p)=>({value:p.id,label:p.project_code+" · "+p.project_name})),null,true),
-      '<div class="field"><label>Concepto del Evento</label><select name="concept_id" required><option value="">Primero selecciona un proyecto...</option></select></div>',
-      selectField("producer_id","Productor","producers",null,true),
-      '<div class="field full receipt-upload"><label>PDF o foto del comprobante</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required><div id="documentScanStatus" class="scan-status">Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.</div></div>',
+      selectHtml(
+        "project_id",
+        "Proyecto",
+        state.projects.map((p)=>({value:p.id,label:p.project_code+" · "+p.project_name})),
+        row?.project_id ?? null,
+        true
+      ),
+      '<div class="field"><label>Concepto del Evento</label><select name="concept_id" required><option value="">Seleccionar...</option>'+
+        (selectedProject?.concepts || []).map((c)=>'<option value="'+c.id+'" '+(String(row?.concept_id ?? "")===String(c.id) ? "selected" : "")+'>'+esc(c.name)+'</option>').join("")+
+      '</select></div>',
+      selectField("producer_id","Productor","producers",row?.producer_id ?? null,true),
+      '<div class="field full receipt-upload"><label>'+(row ? "Reemplazar PDF o foto (opcional)" : "PDF o foto del comprobante")+'</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" '+(row ? "" : "required")+'><div id="documentScanStatus" class="scan-status">'+
+        (row ? 'Si no seleccionas un archivo nuevo, se conservará el documento actual.' : 'Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.')+
+      '</div></div>',
       selectHtml("document_type","Tipo de comprobante",[
         {value:"01",label:"Factura"},{value:"03",label:"Boleta de Venta"}
-      ],"01",true),
-      inputField("issuer_ruc","RUC del Emisor","text","",'inputmode="numeric" maxlength="11" pattern="\\d{11}"'),
-      inputField("series","Serie","text","",'maxlength="4"'),
-      inputField("document_number","Número","text","",'inputmode="numeric" maxlength="20" pattern="\\d+" placeholder="Ej. 00000083"'),
-      inputField("issue_date","Fecha de Emisión","date",""),
-      inputField("amount","Importe Total (S/)","number","",'min="0.01" step="0.01"')
+      ],row?.document_type || "01",true),
+      inputField("issuer_ruc","RUC del Emisor","text",row?.issuer_ruc || "",'inputmode="numeric" maxlength="11" pattern="\\d{11}"'),
+      inputField("series","Serie","text",row?.series || "",'maxlength="4"'),
+      inputField("document_number","Número","text",row?.document_number || "",'inputmode="numeric" maxlength="20" pattern="\\d+" placeholder="Ej. 00000083"'),
+      inputField("issue_date","Fecha de Emisión","date",row ? String(row.issue_date).slice(0,10) : ""),
+      inputField("amount","Importe Total (S/)","number",row?.amount || "",'min="0.01" step="0.01"')
     ].join("");
 
     showHelp(state.sunatConfigured
-      ? "Al guardar, el documento se almacenará y la validación SUNAT se ejecutará automáticamente."
-      : "El documento se guardará, pero falta configurar las credenciales SUNAT del servidor. La rendición quedará como PENDIENTE CONFIGURACIÓN."
+      ? (row
+          ? "Al guardar los cambios, la rendición se volverá a validar automáticamente en SUNAT."
+          : "Al guardar, el documento se almacenará y la validación SUNAT se ejecutará automáticamente.")
+      : "SUNAT todavía no está configurado en el servidor."
     );
 
-    form.querySelector('[name="project_id"]').addEventListener("change",refreshExpenseConcepts);
+    form.querySelector('[name="project_id"]').addEventListener("change",()=>{
+      refreshExpenseConcepts();
+    });
     form.querySelector('[name="document"]').addEventListener("change",(event)=>scanExpenseDocument(event.target.files?.[0]));
     modal.showModal();
     return;
@@ -423,10 +443,17 @@ form.addEventListener("submit",async(event)=>{
   try {
     if (state.module==="expenses") {
       const data=new FormData(form);
-      const result=await request(API+"/expenses",{method:"POST",body:data});
+      const isEditing=Boolean(state.editing);
+      const url=isEditing ? API+"/expenses/"+state.editing.id : API+"/expenses";
+      const result=await request(url,{method:isEditing ? "PUT" : "POST",body:data});
       modal.close();
       const status=result.validation?.status || "PENDIENTE";
-      toast(status==="VALIDADO" ? "Rendición guardada y comprobante VALIDADO en SUNAT." : "Rendición guardada. Estado SUNAT: "+status, status==="ERROR");
+      toast(
+        isEditing
+          ? "Rendición actualizada. Estado SUNAT: "+status
+          : (status==="VALIDADO" ? "Rendición guardada y comprobante VALIDADO en SUNAT." : "Rendición guardada. Estado SUNAT: "+status),
+        status==="ERROR"
+      );
       await loadCurrent();
       return;
     }

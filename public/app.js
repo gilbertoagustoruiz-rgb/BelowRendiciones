@@ -3,6 +3,7 @@ const API = "/api";
 const modules = {
   projects: { title: "Proyectos", singular: "Proyecto" },
   expenses: { title: "Rendiciones", singular: "Rendición" },
+  advances: { title: "Anticipo", singular: "Anticipo" },
   clients: { title: "Clientes", singular: "Cliente" },
   producers: { title: "Productores", singular: "Productor" },
   subproducers: { title: "Sub Productores", singular: "Sub Productor" },
@@ -88,9 +89,9 @@ async function loadCurrent() {
   try {
     if (state.module === "projects") await loadCatalogs();
 
-    if (state.module === "expenses") {
+    if (["expenses","advances"].includes(state.module)) {
       await Promise.all([loadCatalogs(), loadProjects()]);
-      const result = await request(API + "/expenses");
+      const result = await request(API + "/" + state.module);
       state.rows = result.rows;
       state.sunatConfigured = Boolean(result.sunatConfigured);
     } else {
@@ -119,11 +120,12 @@ function renderStats() {
     return;
   }
 
-  if (state.module === "expenses") {
+  if (["expenses","advances"].includes(state.module)) {
     const valid = state.rows.filter((r) => r.validation_status === "VALIDADO").length;
     const pending = state.rows.filter((r) => !["VALIDADO","ANULADO","NO_EXISTE"].includes(r.validation_status)).length;
+    const label = state.module === "advances" ? "Anticipos registrados" : "Rendiciones registradas";
     $("#stats").innerHTML = `
-      <div class="stat"><span>Rendiciones registradas</span><strong>${state.rows.length}</strong></div>
+      <div class="stat"><span>${label}</span><strong>${state.rows.length}</strong></div>
       <div class="stat"><span>Validadas SUNAT</span><strong>${valid}</strong></div>
       <div class="stat"><span>Pendientes / revisar</span><strong>${pending}</strong></div>`;
     return;
@@ -179,7 +181,7 @@ function render() {
         <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
       </td>
     </tr>`).join("") : emptyRow(14);
-  } else if (state.module === "expenses") {
+  } else if (["expenses","advances"].includes(state.module)) {
     thead.innerHTML = `<tr>
       <th>Proyecto</th><th>Concepto</th><th>Productor</th><th>Comprobante</th>
       <th>Fecha</th><th>Importe</th><th>Archivo</th><th>SUNAT</th><th>Detalle SUNAT</th><th>Acciones</th>
@@ -192,7 +194,7 @@ function render() {
         <strong>${esc(r.series)}-${esc(r.document_number)}</strong><br><small>RUC ${esc(r.issuer_ruc)}</small></td>
       <td>${formatDateDisplay(r.issue_date)}</td>
       <td>S/ ${Number(r.amount).toFixed(2)}</td>
-      <td><a class="file-link" target="_blank" href="${API}/expenses/${r.id}/file">Abrir documento</a></td>
+      <td><a class="file-link" target="_blank" href="${API}/${state.module}/${r.id}/file">Abrir documento</a></td>
       <td>${statusBadge(r.validation_status)}</td>
       <td><small>CP: ${esc(r.sunat_estado_cp ?? "—")} · RUC: ${esc(r.sunat_estado_ruc ?? "—")} · Domicilio: ${esc(r.sunat_cond_domi_ruc ?? "—")}<br>${esc(r.sunat_message || "")}</small></td>
       <td class="actions">
@@ -320,8 +322,8 @@ function openForm(row=null) {
   $("#modalTitle").textContent=modules[state.module].singular;
   showHelp("");
 
-  if (state.module === "expenses") {
-    $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVA";
+  if (["expenses","advances"].includes(state.module)) {
+    $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVO";
 
     const selectedProject = row
       ? state.projects.find((p)=>Number(p.id)===Number(row.project_id))
@@ -354,7 +356,7 @@ function openForm(row=null) {
 
     showHelp(state.sunatConfigured
       ? (row
-          ? "Al guardar los cambios, la rendición se volverá a validar automáticamente en SUNAT."
+          ? "Al guardar los cambios, el registro se volverá a validar automáticamente en SUNAT."
           : "Al guardar, el documento se almacenará y la validación SUNAT se ejecutará automáticamente.")
       : "SUNAT todavía no está configurado en el servidor."
     );
@@ -430,7 +432,7 @@ async function deleteRow(id) {
 async function validateExpense(id) {
   try {
     toast("Consultando SUNAT...");
-    const result=await request(API+"/expenses/"+id+"/validate",{method:"POST",body:"{}"});
+    const result=await request(API+"/"+state.module+"/"+id+"/validate",{method:"POST",body:"{}"});
     if (result.validation.status==="VALIDADO") toast("Comprobante validado correctamente en SUNAT.");
     else toast("SUNAT respondió: "+result.validation.status, result.validation.status==="ERROR");
     await loadCurrent();
@@ -441,10 +443,10 @@ form.addEventListener("submit",async(event)=>{
   event.preventDefault();
 
   try {
-    if (state.module==="expenses") {
+    if (["expenses","advances"].includes(state.module)) {
       const data=new FormData(form);
       const isEditing=Boolean(state.editing);
-      const url=isEditing ? API+"/expenses/"+state.editing.id : API+"/expenses";
+      const url=isEditing ? API+"/"+state.module+"/"+state.editing.id : API+"/"+state.module;
       const result=await request(url,{method:isEditing ? "PUT" : "POST",body:data});
       modal.close();
       const status=result.validation?.status || "PENDIENTE";

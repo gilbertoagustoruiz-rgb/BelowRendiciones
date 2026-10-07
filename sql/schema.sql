@@ -22,9 +22,11 @@ CREATE TABLE IF NOT EXISTS profiles (
 );
 
 INSERT INTO profiles (name) VALUES
+  ('ADMIN'),
   ('PRODUCTOR'),
   ('SUB PRODUCTOR'),
-  ('EJECUTIVO')
+  ('EJECUTIVO'),
+  ('COORDINADOR')
 ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS personnel (
@@ -114,6 +116,17 @@ ALTER TABLE personnel ADD CONSTRAINT personnel_profile_id_fkey
 ALTER TABLE personnel DROP CONSTRAINT IF EXISTS uq_personnel_document_profile_id;
 ALTER TABLE personnel ADD CONSTRAINT uq_personnel_document_profile_id
   UNIQUE (document_number, profile_id);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id BIGSERIAL PRIMARY KEY,
+  personnel_id BIGINT NOT NULL REFERENCES personnel(id) ON DELETE CASCADE,
+  token_hash VARCHAR(64) NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_personnel ON auth_sessions(personnel_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS projects (
   id BIGSERIAL PRIMARY KEY,
@@ -273,6 +286,7 @@ CREATE TABLE IF NOT EXISTS advance_requests (
   company VARCHAR(40) NOT NULL CHECK (company IN ('BELOW SAC','BELOW TRADE SAC')),
   request_date DATE NOT NULL DEFAULT CURRENT_DATE,
   applicant_name VARCHAR(180) NOT NULL,
+  applicant_personnel_id BIGINT REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE SET NULL,
   account_number VARCHAR(40) NOT NULL,
   account_type VARCHAR(10) NOT NULL CHECK (account_type IN ('AHORRO','CTE')),
   account_holder VARCHAR(180) NOT NULL,
@@ -299,6 +313,21 @@ CREATE INDEX IF NOT EXISTS idx_expenses_project ON expense_reports(project_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_concept ON expense_reports(concept_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_producer ON expense_reports(producer_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_validation ON expense_reports(validation_status);
+
+ALTER TABLE advance_requests ADD COLUMN IF NOT EXISTS applicant_personnel_id BIGINT;
+
+UPDATE advance_requests ar
+SET applicant_personnel_id = per.id
+FROM personnel per
+WHERE ar.applicant_personnel_id IS NULL
+  AND UPPER(TRIM(ar.applicant_name)) = UPPER(TRIM(per.full_name))
+  AND (
+    SELECT p.name FROM profiles p WHERE p.id=per.profile_id
+  ) IN ('PRODUCTOR','SUB PRODUCTOR');
+
+ALTER TABLE advance_requests DROP CONSTRAINT IF EXISTS advance_requests_applicant_personnel_id_fkey;
+ALTER TABLE advance_requests ADD CONSTRAINT advance_requests_applicant_personnel_id_fkey
+  FOREIGN KEY (applicant_personnel_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS idx_advance_requests_project ON advance_requests(project_id);
 CREATE INDEX IF NOT EXISTS idx_advance_requests_request_date ON advance_requests(request_date);

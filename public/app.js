@@ -5,12 +5,14 @@ const modules = {
   expenses: { title: "Rendiciones", singular: "Rendición" },
   advances: { title: "Anticipo", singular: "Anticipo" },
   clients: { title: "Clientes", singular: "Cliente" },
+  profiles: { title: "Perfiles", singular: "Perfil" },
   personnel: { title: "Personal", singular: "Personal" },
   concepts: { title: "Conceptos de Eventos", singular: "Concepto" },
 };
 
 const fields = {
   clients: [["name","Nombre Cliente","text"],["ruc","RUC","text"],["responsible_person","Persona Responsable","text"]],
+  profiles: [["name","Nombre del Perfil","text"]],
   concepts: [["name","Nombre del Concepto","text"]],
 };
 
@@ -71,7 +73,7 @@ async function changeModule(module) {
 }
 
 async function loadCatalogs() {
-  const keys = ["clients","personnel","concepts"];
+  const keys = ["clients","profiles","personnel","concepts"];
   const data = await Promise.all(keys.map((key) => request(API + "/" + key)));
   state.catalogs = Object.fromEntries(keys.map((key, i) => [key, data[i]]));
 }
@@ -82,7 +84,7 @@ async function loadProjects() {
 
 async function loadCurrent() {
   try {
-    if (state.module === "projects") await loadCatalogs();
+    if (["projects","personnel"].includes(state.module)) await loadCatalogs();
 
     if (state.module === "expenses") {
       await Promise.all([loadCatalogs(), loadProjects()]);
@@ -495,11 +497,13 @@ function openForm(row=null) {
     $("#formFields").innerHTML=[
       inputField("full_name","Nombre Completo","text",row?.full_name || ""),
       inputField("document_number","DNI / Pasaporte","text",row?.document_number || "",'maxlength="20"'),
-      selectHtml("profile","Perfil",[
-        {value:"PRODUCTOR",label:"Productor"},
-        {value:"SUB PRODUCTOR",label:"Sub Productor"},
-        {value:"EJECUTIVO",label:"Ejecutivo"}
-      ],row?.profile || "PRODUCTOR",true),
+      selectHtml(
+        "profile_id",
+        "Perfil",
+        (state.catalogs.profiles || []).map((p)=>({value:p.id,label:p.name})),
+        row?.profile_id || "",
+        true
+      ),
       selectHtml("status","Estado",[
         {value:"ACTIVO",label:"Activo"},
         {value:"INACTIVO",label:"Inactivo"}

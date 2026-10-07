@@ -5,17 +5,12 @@ const modules = {
   expenses: { title: "Rendiciones", singular: "Rendición" },
   advances: { title: "Anticipo", singular: "Anticipo" },
   clients: { title: "Clientes", singular: "Cliente" },
-  producers: { title: "Productores", singular: "Productor" },
-  subproducers: { title: "Sub Productores", singular: "Sub Productor" },
-  executives: { title: "Ejecutivos", singular: "Ejecutivo" },
+  personnel: { title: "Personal", singular: "Personal" },
   concepts: { title: "Conceptos de Eventos", singular: "Concepto" },
 };
 
 const fields = {
   clients: [["name","Nombre Cliente","text"],["ruc","RUC","text"],["responsible_person","Persona Responsable","text"]],
-  producers: [["name","Nombre","text"],["dni","DNI","text"]],
-  subproducers: [["name","Nombre","text"],["dni","DNI","text"]],
-  executives: [["name","Nombre","text"],["dni","DNI","text"]],
   concepts: [["name","Nombre del Concepto","text"]],
 };
 
@@ -76,7 +71,7 @@ async function changeModule(module) {
 }
 
 async function loadCatalogs() {
-  const keys = ["clients","producers","subproducers","executives","concepts"];
+  const keys = ["clients","personnel","concepts"];
   const data = await Promise.all(keys.map((key) => request(API + "/" + key)));
   state.catalogs = Object.fromEntries(keys.map((key, i) => [key, data[i]]));
 }
@@ -237,6 +232,21 @@ function render() {
         <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
       </td>
     </tr>`).join("") : emptyRow(9);
+  } else if (state.module === "personnel") {
+    thead.innerHTML = `<tr>
+      <th>Nombre Completo</th><th>DNI / Pasaporte</th><th>Perfil</th><th>Contraseña</th><th>Estado</th><th>Acciones</th>
+    </tr>`;
+    tbody.innerHTML = rows.length ? rows.map((r) => `<tr>
+      <td><strong>${esc(r.full_name)}</strong></td>
+      <td>${esc(r.document_number)}</td>
+      <td><span class="badge">${esc(r.profile)}</span></td>
+      <td>${r.password_configured ? "••••••••" : '<span class="status pendiente-configuracion">PENDIENTE</span>'}</td>
+      <td>${esc(r.status)}</td>
+      <td class="actions">
+        <button class="action-btn" data-edit="${r.id}">Editar</button>
+        <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
+      </td>
+    </tr>`).join("") : emptyRow(6);
   } else {
     const defs = fields[state.module];
     thead.innerHTML = `<tr>${defs.map(([,label]) => "<th>"+label+"</th>").join("")}<th>Acciones</th></tr>`;
@@ -273,6 +283,12 @@ function selectHtml(name,label,options,selected,required=true,extra="") {
 
 function selectField(name,label,catalog,selected,required=true) {
   return selectHtml(name,label,(state.catalogs[catalog]||[]).map((r)=>({value:r.id,label:r.name})),selected,required);
+}
+
+function personnelOptions(profile) {
+  return (state.catalogs.personnel || [])
+    .filter((p)=>p.profile===profile && p.status==="ACTIVO")
+    .map((p)=>({value:p.id,label:p.full_name+" · "+p.document_number}));
 }
 
 function showHelp(text) {
@@ -374,7 +390,7 @@ function openForm(row=null) {
       '<div class="field"><label>Concepto del Evento</label><select name="concept_id" required><option value="">Seleccionar...</option>'+
         (selectedProject?.concepts || []).map((c)=>'<option value="'+c.id+'" '+(String(row?.concept_id ?? "")===String(c.id) ? "selected" : "")+'>'+esc(c.name)+'</option>').join("")+
       '</select></div>',
-      selectField("producer_id","Productor","producers",row?.producer_id ?? null,true),
+      selectHtml("producer_id","Productor",personnelOptions("PRODUCTOR"),row?.producer_id ?? null,true),
       '<div class="field full receipt-upload"><label>'+(row ? "Reemplazar PDF o foto (opcional)" : "PDF o foto del comprobante")+'</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" '+(row ? "" : "required")+'><div id="documentScanStatus" class="scan-status">'+
         (row ? 'Si no seleccionas un archivo nuevo, se conservará el documento actual.' : 'Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.')+
       '</div></div>',
@@ -416,16 +432,12 @@ function openForm(row=null) {
       selectHtml(
         "applicant_name",
         "Datos del solicitante",
-        [
-          ...(state.catalogs.producers || []).map((p)=>({
-            value:p.name,
-            label:p.name+" · Productor"
+        (state.catalogs.personnel || [])
+          .filter((p)=>["PRODUCTOR","SUB PRODUCTOR"].includes(p.profile) && p.status==="ACTIVO")
+          .map((p)=>({
+            value:p.full_name,
+            label:p.full_name+" · "+p.profile
           })),
-          ...(state.catalogs.subproducers || []).map((p)=>({
-            value:p.name,
-            label:p.name+" · Sub Productor"
-          }))
-        ],
         row?.applicant_name || "",
         true
       ),
@@ -479,6 +491,30 @@ function openForm(row=null) {
     return;
   }
 
+  if (state.module === "personnel") {
+    $("#formFields").innerHTML=[
+      inputField("full_name","Nombre Completo","text",row?.full_name || ""),
+      inputField("document_number","DNI / Pasaporte","text",row?.document_number || "",'maxlength="20"'),
+      selectHtml("profile","Perfil",[
+        {value:"PRODUCTOR",label:"Productor"},
+        {value:"SUB PRODUCTOR",label:"Sub Productor"},
+        {value:"EJECUTIVO",label:"Ejecutivo"}
+      ],row?.profile || "PRODUCTOR",true),
+      selectHtml("status","Estado",[
+        {value:"ACTIVO",label:"Activo"},
+        {value:"INACTIVO",label:"Inactivo"}
+      ],row?.status || "ACTIVO",true),
+      '<div class="field"><label>'+(row ? "Nueva contraseña" : "Contraseña")+'</label><input name="password" type="password" minlength="6" '+(row ? "" : "required")+' autocomplete="new-password" placeholder="'+(row ? "Dejar vacío para mantener la actual" : "Mínimo 6 caracteres")+'"></div>',
+      '<div class="field"><label>'+(row ? "Confirmar nueva contraseña" : "Confirmar contraseña")+'</label><input name="password_confirm" type="password" minlength="6" '+(row ? "" : "required")+' autocomplete="new-password"></div>'
+    ].join("");
+    showHelp(row
+      ? "La contraseña actual nunca se muestra. Si dejas los campos de nueva contraseña vacíos, se conserva la existente."
+      : "La contraseña se almacenará protegida mediante hash y nunca se mostrará en texto plano."
+    );
+    modal.showModal();
+    return;
+  }
+
   if (state.module === "projects") {
     const conceptIds=new Set((row?.concepts||[]).map((c)=>Number(c.id)));
     $("#formFields").innerHTML=[
@@ -495,9 +531,9 @@ function openForm(row=null) {
         {value:"USD",label:"Dólares (USD)"}
       ],row?.currency || "PEN",true),
       '<div class="field" id="exchangeRateField"><label>Tipo de Cambio</label><input name="exchange_rate" type="number" min="0.0001" step="0.0001" value="'+esc(row?.exchange_rate ?? "")+'" placeholder="Ej. 3.7500"></div>',
-      selectField("producer_id","Productor","producers",row?.producer_id),
-      selectField("subproducer_id","Sub Productor","subproducers",row?.subproducer_id,false),
-      selectField("executive_id","Ejecutivo","executives",row?.executive_id),
+      selectHtml("producer_id","Productor",personnelOptions("PRODUCTOR"),row?.producer_id,true),
+      selectHtml("subproducer_id","Sub Productor",personnelOptions("SUB PRODUCTOR"),row?.subproducer_id,false),
+      selectHtml("executive_id","Ejecutivo",personnelOptions("EJECUTIVO"),row?.executive_id,true),
       `<div class="field full"><label>Conceptos del Evento</label><div class="checkbox-grid">
         ${(state.catalogs.concepts||[]).map((c)=>`<label class="check">
           <input type="checkbox" name="concept_ids" value="${c.id}" ${conceptIds.has(Number(c.id)) ? "checked" : ""}>
@@ -582,6 +618,20 @@ form.addEventListener("submit",async(event)=>{
     }
 
     const data=Object.fromEntries(new FormData(form).entries());
+
+    if (state.module==="personnel") {
+      if ((data.password || "") !== (data.password_confirm || "")) {
+        throw new Error("Las contraseñas no coinciden.");
+      }
+      delete data.password_confirm;
+      const url=state.editing ? API+"/personnel/"+state.editing.id : API+"/personnel";
+      await request(url,{method:state.editing ? "PUT" : "POST",body:JSON.stringify(data)});
+      modal.close();
+      toast(state.editing ? "Personal actualizado correctamente." : "Personal creado correctamente.");
+      await loadCurrent();
+      return;
+    }
+
     if (state.module==="projects") {
       data.concept_ids=[...form.querySelectorAll('input[name="concept_ids"]:checked')].map((input)=>Number(input.value));
     }

@@ -257,7 +257,25 @@ INSERT INTO event_concepts (name) VALUES
   ('DISEÑO Y PRODUCCIÓN')
 ON CONFLICT (name) DO NOTHING;
 
-DO $$
+DO $
+BEGIN
+  IF to_regclass('public.advance_reports') IS NOT NULL THEN
+    ALTER TABLE advance_reports DROP CONSTRAINT IF EXISTS advance_reports_producer_id_fkey;
+
+    IF to_regclass('public.producers') IS NOT NULL THEN
+      UPDATE advance_reports ar
+      SET producer_id = per.id
+      FROM personnel per
+      WHERE per.legacy_source='producers'
+        AND per.legacy_id=ar.producer_id;
+    END IF;
+
+    ALTER TABLE advance_reports ADD CONSTRAINT advance_reports_producer_id_fkey
+      FOREIGN KEY (producer_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+  END IF;
+END $;
+
+DO $
 BEGIN
   IF to_regclass('public.producers') IS NOT NULL THEN
     EXECUTE 'DROP TABLE producers';

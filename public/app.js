@@ -95,7 +95,7 @@ async function loadCurrent() {
       state.rows = result.rows;
       state.sunatConfigured = Boolean(result.sunatConfigured);
     } else if (state.module === "advances") {
-      await loadProjects();
+      await Promise.all([loadCatalogs(), loadProjects()]);
       const result = await request(API + "/advances");
       state.rows = result.rows;
     } else {
@@ -413,7 +413,22 @@ function openForm(row=null) {
         {value:"BELOW TRADE SAC",label:"Below Trade SAC"}
       ],row?.company || "BELOW SAC",true),
       inputField("request_date","Fecha de solicitud","date",row ? String(row.request_date).slice(0,10) : today),
-      inputField("applicant_name","Datos del solicitante","text",row?.applicant_name || ""),
+      selectHtml(
+        "applicant_name",
+        "Datos del solicitante",
+        [
+          ...(state.catalogs.producers || []).map((p)=>({
+            value:p.name,
+            label:p.name+" · Productor"
+          })),
+          ...(state.catalogs.subproducers || []).map((p)=>({
+            value:p.name,
+            label:p.name+" · Sub Productor"
+          }))
+        ],
+        row?.applicant_name || "",
+        true
+      ),
       inputField("account_number","Número de cuenta","text",row?.account_number || "",'maxlength="40"'),
       selectHtml("account_type","Tipo de cuenta",[
         {value:"AHORRO",label:"Ahorro"},

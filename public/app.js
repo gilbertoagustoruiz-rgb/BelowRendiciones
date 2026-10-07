@@ -23,6 +23,7 @@ let state = {
   catalogs: {},
   projects: [],
   sunatConfigured: false,
+  currentUser: null,
 };
 
 const $ = (s) => document.querySelector(s);
@@ -48,16 +49,62 @@ function toast(message, isError = false) {
 async function request(url, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || "No se pudo completar la operación.");
+  if (!response.ok) {
+    if (response.status === 401 && !url.includes("/auth/")) showAuth();
+    throw new Error(body.error || "No se pudo completar la operación.");
+  }
   return body;
 }
 
+
+function showAuth(bootstrap=false) {
+  state.currentUser=null;
+  $("#appShell")?.classList.add("hidden");
+  $("#authView")?.classList.remove("hidden");
+  $("#loginPanel")?.classList.toggle("hidden",bootstrap);
+  $("#bootstrapPanel")?.classList.toggle("hidden",!bootstrap);
+}
+
+function showApp(user) {
+  state.currentUser=user;
+  $("#authView")?.classList.add("hidden");
+  $("#appShell")?.classList.remove("hidden");
+  $("#currentUserName").textContent=user.full_name || "";
+  $("#currentUserProfile").textContent=user.profile || "";
+  const allowed=user.modules || [];
+  if (!allowed.includes(state.module)) {
+    state.module=allowed[0] || "expenses";
+  }
+  $("#pageTitle").textContent=modules[state.module]?.title || "Below Rendiciones";
+  renderNav();
+}
+
+async function initializeAuth() {
+  try {
+    const user=await request(API+"/auth/me");
+    showApp(user);
+    await loadCurrent();
+    return;
+  } catch (_) {}
+
+  try {
+    const status=await request(API+"/auth/status");
+    showAuth(Boolean(status.bootstrapRequired));
+  } catch (error) {
+    showAuth(false);
+    toast(error.message,true);
+  }
+}
+
 function renderNav() {
-  nav.innerHTML = Object.entries(modules).map(([key, mod]) =>
-    `<button class="nav-btn ${state.module === key ? "active" : ""}" data-module="${key}">${mod.title}</button>`
-  ).join("");
+  const allowed=new Set(state.currentUser?.modules || []);
+  nav.innerHTML = Object.entries(modules)
+    .filter(([key])=>allowed.has(key))
+    .map(([key, mod]) =>
+      `<button class="nav-btn ${state.module === key ? "active" : ""}" data-module="${key}">${mod.title}</button>`
+    ).join("");
   nav.querySelectorAll(".nav-btn").forEach((button) => {
     button.addEventListener("click", () => changeModule(button.dataset.module));
   });
@@ -432,17 +479,19 @@ function openForm(row=null) {
       ],row?.company || "BELOW SAC",true),
       inputField("request_date","Fecha de solicitud","date",row ? String(row.request_date).slice(0,10) : today),
       selectHtml(
-        "applicant_name",
+        "applicant_personnel_id",
         "Datos del solicitante",
         (state.catalogs.personnel || [])
           .filter((p)=>["PRODUCTOR","SUB PRODUCTOR"].includes(p.profile) && p.status==="ACTIVO")
+          .filter((p)=>["PRODUCTOR","SUB PRODUCTOR"].includes(state.currentUser?.profile) ? Number(p.id)===Number(state.currentUser.id) : true)
           .map((p)=>({
-            value:p.full_name,
+            value:p.id,
             label:p.full_name+" · "+p.profile
           })),
-        row?.applicant_name || "",
+        row?.applicant_personnel_id || (["PRODUCTOR","SUB PRODUCTOR"].includes(state.currentUser?.profile) ? state.currentUser.id : ""),
         true
       ),
+      '<input type="hidden" name="applicant_name" value="'+esc(row?.applicant_name || (["PRODUCTOR","SUB PRODUCTOR"].includes(state.currentUser?.profile) ? state.currentUser.full_name : ""))+'">',
       inputField("account_number","Número de cuenta","text",row?.account_number || "",'maxlength="40"'),
       selectHtml("account_type","Tipo de cuenta",[
         {value:"AHORRO",label:"Ahorro"},
@@ -475,6 +524,15 @@ function openForm(row=null) {
       ],row?.expected_document_type || "FACTURA",true)
     ].join("");
 
+    const applicantSelect=form.querySelector('[name="applicant_personnel_id"]');
+    const applicantName=form.querySelector('[name="applicant_name"]');
+    const syncApplicant=()=>{
+      const person=(state.catalogs.personnel || []).find((p)=>String(p.id)===String(applicantSelect?.value));
+      if (applicantName) applicantName.value=person?.full_name || "";
+    };
+    applicantSelect?.addEventListener("change",syncApplicant);
+    syncApplicant();
+
     const syncProject=()=>{
       const select=form.querySelector('[name="project_id"]');
       const p=state.projects.find((item)=>String(item.id)===String(select?.value));
@@ -500,7 +558,9 @@ function openForm(row=null) {
       selectHtml(
         "profile_id",
         "Perfil",
-        (state.catalogs.profiles || []).map((p)=>({value:p.id,label:p.name})),
+        (state.catalogs.profiles || [])
+          .filter((p)=>state.currentUser?.profile==="ADMIN" || !["ADMIN","COORDINADOR"].includes(p.name))
+          .map((p)=>({value:p.id,label:p.name})),
         row?.profile_id || "",
         true
       ),
@@ -652,5 +712,38 @@ $("#closeModal").addEventListener("click",()=>modal.close());
 $("#cancelBtn").addEventListener("click",()=>modal.close());
 $("#search").addEventListener("input",render);
 
-renderNav();
-loadCurrent();
+$("#loginForm")?.addEventListener("submit",async(event)=>{
+  event.preventDefault();
+  try {
+    const data=Object.fromEntries(new FormData(event.currentTarget).entries());
+    const user=await request(API+"/auth/login",{method:"POST",body:JSON.stringify(data)});
+    event.currentTarget.reset();
+    showApp(user);
+    await loadCurrent();
+  } catch(error) {
+    toast(error.message,true);
+  }
+});
+
+$("#bootstrapForm")?.addEventListener("submit",async(event)=>{
+  event.preventDefault();
+  try {
+    const data=Object.fromEntries(new FormData(event.currentTarget).entries());
+    if (data.password !== data.password_confirm) throw new Error("Las contraseñas no coinciden.");
+    delete data.password_confirm;
+    await request(API+"/auth/bootstrap",{method:"POST",body:JSON.stringify(data)});
+    const user=await request(API+"/auth/me");
+    event.currentTarget.reset();
+    showApp(user);
+    await loadCurrent();
+  } catch(error) {
+    toast(error.message,true);
+  }
+});
+
+$("#logoutBtn")?.addEventListener("click",async()=>{
+  try { await request(API+"/auth/logout",{method:"POST",body:"{}"}); } catch(_) {}
+  showAuth(false);
+});
+
+initializeAuth();

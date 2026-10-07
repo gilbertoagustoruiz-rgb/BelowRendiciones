@@ -264,7 +264,7 @@ LEFT JOIN event_concepts ec ON ec.id = pec.concept_id
 
 app.get("/api/projects", async (_req, res) => {
   try {
-    const result = await query(projectSelect + " GROUP BY p.id, c.name, c.ruc, pr.name, sp.name, e.name ORDER BY p.id DESC");
+    const result = await query(projectSelect + " GROUP BY p.id, c.name, c.ruc, pr.full_name, sp.full_name, e.full_name ORDER BY p.id DESC");
     res.json(result.rows);
   } catch (error) { dbError(res, error); }
 });

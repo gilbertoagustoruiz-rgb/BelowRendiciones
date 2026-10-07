@@ -132,3 +132,20 @@ dialog::backdrop { background:rgba(5,16,32,.58); }
 .scan-status.warning { background: #f8eed8; color: #8b651d; }
 .scan-status.error { background: #f7e4e4; color: #9d3737; }
 button:disabled { opacity: .55; cursor: not-allowed; }
+
+.field textarea {
+  width: 100%;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  padding: 11px 12px;
+  font: inherit;
+  resize: vertical;
+  min-height: 82px;
+  background: #fff;
+}
+.actions a.action-btn {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  white-space: nowrap;
+}

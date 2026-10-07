@@ -31,6 +31,7 @@ app.use(express.static("public"));
 
 const catalogs = {
   clients: { table: "clients", fields: ["name", "ruc", "responsible_person"], required: ["name", "ruc", "responsible_person"] },
+  profiles: { table: "profiles", fields: ["name"], required: ["name"] },
   concepts: { table: "event_concepts", fields: ["name"], required: ["name"] },
 };
 
@@ -85,7 +86,10 @@ app.post("/api/:type", async (req, res, next) => {
   if (validation) return res.status(400).json({ error: validation });
 
   try {
-    const values = config.fields.map((field) => String(req.body[field]).trim());
+    const values = config.fields.map((field) => {
+      const value = String(req.body[field]).trim();
+      return type === "profiles" && field === "name" ? value.toUpperCase() : value;
+    });
     const placeholders = config.fields.map((_, i) => "$" + (i + 1)).join(", ");
     const result = await query(
       "INSERT INTO " + config.table + " (" + config.fields.join(", ") + ") VALUES (" + placeholders + ") RETURNING *",
@@ -104,7 +108,10 @@ app.put("/api/:type/:id", async (req, res, next) => {
   if (validation) return res.status(400).json({ error: validation });
 
   try {
-    const values = config.fields.map((field) => String(req.body[field]).trim());
+    const values = config.fields.map((field) => {
+      const value = String(req.body[field]).trim();
+      return type === "profiles" && field === "name" ? value.toUpperCase() : value;
+    });
     const setSql = config.fields.map((field, i) => field + "=$" + (i + 1)).join(", ");
     values.push(req.params.id);
     const result = await query(
@@ -129,11 +136,13 @@ app.delete("/api/:type/:id", async (req, res, next) => {
 app.get("/api/personnel", async (_req, res) => {
   try {
     const result = await query(
-      `SELECT id, full_name, document_number, profile, status,
-              (password_hash IS NOT NULL) AS password_configured,
-              created_at, updated_at
-       FROM personnel
-       ORDER BY full_name ASC, profile ASC`
+      `SELECT per.id, per.full_name, per.document_number, per.profile_id,
+              p.name AS profile, per.status,
+              (per.password_hash IS NOT NULL) AS password_configured,
+              per.created_at, per.updated_at
+       FROM personnel per
+       JOIN profiles p ON p.id=per.profile_id
+       ORDER BY per.full_name ASC, p.name ASC`
     );
     res.json(result.rows);
   } catch (error) {
@@ -142,13 +151,10 @@ app.get("/api/personnel", async (_req, res) => {
 });
 
 function validatePersonnel(body, editing=false) {
-  const required = ["full_name","document_number","profile","status"];
+  const required = ["full_name","document_number","profile_id","status"];
   const missing = requiredError(body, required);
   if (missing) return missing;
 
-  if (!["PRODUCTOR","SUB PRODUCTOR","EJECUTIVO"].includes(String(body.profile))) {
-    return "Perfil inválido.";
-  }
   if (!["ACTIVO","INACTIVO"].includes(String(body.status))) {
     return "Estado inválido.";
   }
@@ -169,17 +175,20 @@ app.post("/api/personnel", async (req, res) => {
   if (validation) return res.status(400).json({ error: validation });
 
   try {
+    const profile = await query("SELECT id FROM profiles WHERE id=$1", [req.body.profile_id]);
+    if (!profile.rows[0]) return res.status(400).json({ error: "El perfil seleccionado no existe." });
+
     const passwordHash = await bcrypt.hash(String(req.body.password), 12);
     const result = await query(
       `INSERT INTO personnel
-       (full_name, document_number, profile, password_hash, status)
+       (full_name, document_number, profile_id, password_hash, status)
        VALUES ($1,$2,$3,$4,$5)
-       RETURNING id, full_name, document_number, profile, status,
+       RETURNING id, full_name, document_number, profile_id, status,
                  true AS password_configured, created_at, updated_at`,
       [
         String(req.body.full_name).trim(),
         String(req.body.document_number).trim().toUpperCase(),
-        String(req.body.profile),
+        Number(req.body.profile_id),
         passwordHash,
         String(req.body.status),
       ]
@@ -195,6 +204,9 @@ app.put("/api/personnel/:id", async (req, res) => {
   if (validation) return res.status(400).json({ error: validation });
 
   try {
+    const profile = await query("SELECT id FROM profiles WHERE id=$1", [req.body.profile_id]);
+    if (!profile.rows[0]) return res.status(400).json({ error: "El perfil seleccionado no existe." });
+
     const current = await query("SELECT id FROM personnel WHERE id=$1", [req.params.id]);
     if (!current.rows[0]) return res.status(404).json({ error: "Personal no encontrado." });
 
@@ -207,18 +219,18 @@ app.put("/api/personnel/:id", async (req, res) => {
       `UPDATE personnel SET
         full_name=$1,
         document_number=$2,
-        profile=$3,
+        profile_id=$3,
         status=$4,
         password_hash=COALESCE($5,password_hash),
         updated_at=NOW()
        WHERE id=$6
-       RETURNING id, full_name, document_number, profile, status,
+       RETURNING id, full_name, document_number, profile_id, status,
                  (password_hash IS NOT NULL) AS password_configured,
                  created_at, updated_at`,
       [
         String(req.body.full_name).trim(),
         String(req.body.document_number).trim().toUpperCase(),
-        String(req.body.profile),
+        Number(req.body.profile_id),
         String(req.body.status),
         passwordHash,
         req.params.id,

@@ -14,18 +14,31 @@ CREATE TABLE IF NOT EXISTS event_concepts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS profiles (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(60) NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO profiles (name) VALUES
+  ('PRODUCTOR'),
+  ('SUB PRODUCTOR'),
+  ('EJECUTIVO')
+ON CONFLICT (name) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS personnel (
   id BIGSERIAL PRIMARY KEY,
   full_name VARCHAR(180) NOT NULL,
   document_number VARCHAR(20) NOT NULL,
-  profile VARCHAR(30) NOT NULL CHECK (profile IN ('PRODUCTOR','SUB PRODUCTOR','EJECUTIVO')),
+  profile VARCHAR(60),
+  profile_id BIGINT REFERENCES profiles(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   password_hash TEXT,
   status VARCHAR(20) NOT NULL DEFAULT 'ACTIVO' CHECK (status IN ('ACTIVO','INACTIVO')),
   legacy_source VARCHAR(30),
   legacy_id BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_personnel_document_profile UNIQUE (document_number, profile),
   CONSTRAINT uq_personnel_legacy UNIQUE (legacy_source, legacy_id)
 );
 
@@ -57,7 +70,49 @@ BEGIN
       ON CONFLICT (legacy_source, legacy_id) DO NOTHING
     $sql$;
   END IF;
-END $$;
+END $;
+
+ALTER TABLE personnel ADD COLUMN IF NOT EXISTS profile_id BIGINT;
+
+DO $profile_migration$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema='public'
+      AND table_name='personnel'
+      AND column_name='profile'
+  ) THEN
+    UPDATE personnel per
+    SET profile_id = p.id
+    FROM profiles p
+    WHERE per.profile_id IS NULL
+      AND UPPER(TRIM(per.profile)) = p.name;
+  END IF;
+END
+$profile_migration$;
+
+ALTER TABLE personnel DROP CONSTRAINT IF EXISTS personnel_profile_check;
+ALTER TABLE personnel DROP CONSTRAINT IF EXISTS uq_personnel_document_profile;
+DROP INDEX IF EXISTS idx_personnel_profile;
+
+DO $profile_required$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM personnel WHERE profile_id IS NULL) THEN
+    ALTER TABLE personnel ALTER COLUMN profile_id SET NOT NULL;
+  END IF;
+END
+$profile_required$;
+
+ALTER TABLE personnel DROP COLUMN IF EXISTS profile;
+
+ALTER TABLE personnel DROP CONSTRAINT IF EXISTS personnel_profile_id_fkey;
+ALTER TABLE personnel ADD CONSTRAINT personnel_profile_id_fkey
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+ALTER TABLE personnel DROP CONSTRAINT IF EXISTS uq_personnel_document_profile_id;
+ALTER TABLE personnel ADD CONSTRAINT uq_personnel_document_profile_id
+  UNIQUE (document_number, profile_id);
 
 CREATE TABLE IF NOT EXISTS projects (
   id BIGSERIAL PRIMARY KEY,
@@ -246,7 +301,7 @@ CREATE INDEX IF NOT EXISTS idx_advance_requests_project ON advance_requests(proj
 CREATE INDEX IF NOT EXISTS idx_advance_requests_request_date ON advance_requests(request_date);
 CREATE INDEX IF NOT EXISTS idx_advance_requests_deposit_date ON advance_requests(deposit_date);
 
-CREATE INDEX IF NOT EXISTS idx_personnel_profile ON personnel(profile);
+CREATE INDEX IF NOT EXISTS idx_personnel_profile_id ON personnel(profile_id);
 CREATE INDEX IF NOT EXISTS idx_personnel_status ON personnel(status);
 
 INSERT INTO event_concepts (name) VALUES

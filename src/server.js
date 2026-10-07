@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import "dotenv/config";
+import PDFDocument from "pdfkit";
 import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, validateCpe } from "./sunat.js";
@@ -514,261 +515,132 @@ app.delete("/api/expenses/:id", async (req, res) => {
 });
 
 
-const advanceSelect = `
+const advanceRequestSelect = `
 SELECT
   ar.*,
   p.project_code,
   p.project_name,
-  c.name AS client_name,
-  ec.name AS concept_name,
-  pr.name AS producer_name
-FROM advance_reports ar
+  c.name AS client_name
+FROM advance_requests ar
 JOIN projects p ON p.id=ar.project_id
 JOIN clients c ON c.id=p.client_id
-JOIN event_concepts ec ON ec.id=ar.concept_id
-JOIN producers pr ON pr.id=ar.producer_id
 `;
 
-async function runAdvanceSunatValidation(advanceId) {
-  const result = await query("SELECT * FROM advance_reports WHERE id=$1", [advanceId]);
-  const advance = result.rows[0];
-  if (!advance) throw new Error("Anticipo no encontrado.");
+function validateAdvanceRequest(body) {
+  const required = [
+    "company","request_date","applicant_name","account_number","account_type",
+    "account_holder","bank","beneficiary_document","beneficiary_name","amount",
+    "project_id","deposit_date","settlement_date","observations","expected_document_type"
+  ];
 
-  if (!isSunatConfigured()) {
-    await query(
-      `UPDATE advance_reports
-       SET validation_status='PENDIENTE_CONFIGURACION',
-           sunat_message='Faltan credenciales SUNAT en el servidor.'
-       WHERE id=$1`,
-      [advanceId]
-    );
-    return { configured: false, status: "PENDIENTE_CONFIGURACION" };
+  const missing = requiredError(body, required);
+  if (missing) return missing;
+
+  if (!["BELOW SAC","BELOW TRADE SAC"].includes(String(body.company))) {
+    return "Empresa inválida.";
   }
-
-  try {
-    const data = await validateCpe(advance);
-    const status = mapSunatStatus(data);
-
-    await query(
-      `UPDATE advance_reports SET
-       validation_status=$1,
-       sunat_estado_cp=$2,
-       sunat_estado_ruc=$3,
-       sunat_cond_domi_ruc=$4,
-       sunat_message=$5,
-       sunat_observations=$6::jsonb,
-       sunat_response=$7::jsonb,
-       validated_at=NOW()
-       WHERE id=$8`,
-      [
-        status,
-        data?.data?.estadoCp == null ? null : String(data.data.estadoCp),
-        data?.data?.estadoRuc == null ? null : String(data.data.estadoRuc),
-        data?.data?.condDomiRuc == null ? null : String(data.data.condDomiRuc),
-        data?.message || null,
-        JSON.stringify(data?.data?.Observaciones || []),
-        JSON.stringify(data),
-        advanceId,
-      ]
-    );
-
-    return { configured: true, status, data };
-  } catch (error) {
-    const payload = error.sunatPayload || { error: error.message };
-    await query(
-      `UPDATE advance_reports SET
-       validation_status='ERROR',
-       sunat_message=$1,
-       sunat_response=$2::jsonb,
-       validated_at=NOW()
-       WHERE id=$3`,
-      [error.message, JSON.stringify(payload), advanceId]
-    );
-    return { configured: true, status: "ERROR", error: error.message, data: payload };
+  if (!["AHORRO","CTE"].includes(String(body.account_type))) {
+    return "Tipo de cuenta inválido.";
   }
+  if (!["RH","FACTURA","BOLETA","OTRO"].includes(String(body.expected_document_type))) {
+    return "Tipo de comprobante inválido.";
+  }
+  if (Number(body.amount) <= 0) return "El monto a depositar debe ser mayor a 0.";
+
+  return null;
+}
+
+function advanceRequestValues(body) {
+  return [
+    String(body.company).trim(),
+    body.request_date,
+    String(body.applicant_name).trim(),
+    String(body.account_number).trim(),
+    String(body.account_type).trim(),
+    String(body.account_holder).trim(),
+    String(body.bank).trim(),
+    String(body.cci || "").trim() || null,
+    String(body.beneficiary_document).trim(),
+    String(body.beneficiary_name).trim(),
+    Number(body.amount),
+    Number(body.project_id),
+    body.deposit_date,
+    body.settlement_date,
+    String(body.observations).trim(),
+    String(body.expected_document_type).trim(),
+  ];
 }
 
 app.get("/api/advances", async (_req, res) => {
   try {
-    const result = await query(advanceSelect + " ORDER BY ar.id DESC");
-    res.json({ rows: result.rows, sunatConfigured: isSunatConfigured() });
+    const result = await query(advanceRequestSelect + " ORDER BY ar.id DESC");
+    res.json({ rows: result.rows });
   } catch (error) {
     dbError(res, error);
   }
 });
 
-app.get("/api/advances/:id/file", async (req, res) => {
-  try {
-    const result = await query("SELECT * FROM advance_reports WHERE id=$1", [req.params.id]);
-    if (!result.rows[0]) return res.status(404).json({ error: "Archivo no encontrado." });
-    await sendEvidence(res, result.rows[0]);
-  } catch (error) {
-    console.error(error);
-    if (!res.headersSent) res.status(500).json({ error: "No se pudo abrir el archivo." });
-  }
-});
-
-app.post("/api/advances/scan", upload.single("document"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Debes adjuntar un PDF o foto del comprobante." });
-
-  try {
-    const result = await readReceiptDocument(req.file);
-    res.json(result);
-  } catch (error) {
-    console.error("Error leyendo comprobante:", error);
-    res.status(500).json({ error: "No se pudo leer automáticamente el documento. Puedes completar los campos manualmente." });
-  }
-});
-
-app.post("/api/advances", upload.single("document"), async (req, res) => {
-  const validation = validateExpenseInput(req.body);
-  if (validation) return res.status(400).json({ error: validation });
-  if (!req.file) return res.status(400).json({ error: "Debes adjuntar el PDF o foto del comprobante." });
-
-  try {
-    const projectCheck = await query(
-      "SELECT id, producer_id FROM projects WHERE id=$1",
-      [req.body.project_id]
-    );
-    if (!projectCheck.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
-    if (Number(projectCheck.rows[0].producer_id) !== Number(req.body.producer_id)) {
-      return res.status(400).json({ error: "El productor seleccionado no corresponde al proyecto." });
-    }
-
-    const linkCheck = await query(
-      "SELECT 1 FROM project_event_concepts WHERE project_id=$1 AND concept_id=$2",
-      [req.body.project_id, req.body.concept_id]
-    );
-    if (!linkCheck.rows[0]) {
-      return res.status(400).json({ error: "El concepto seleccionado no está asignado a este proyecto." });
-    }
-
-    const stored = await saveEvidence(req.file);
-    const inserted = await query(
-      `INSERT INTO advance_reports
-       (project_id, concept_id, producer_id, document_type, issuer_ruc, series,
-        document_number, issue_date, amount, file_name, file_mime, file_storage, file_key)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       RETURNING *`,
-      [
-        Number(req.body.project_id),
-        Number(req.body.concept_id),
-        Number(req.body.producer_id),
-        String(req.body.document_type),
-        String(req.body.issuer_ruc).trim(),
-        String(req.body.series).trim().toUpperCase(),
-        String(req.body.document_number).trim(),
-        req.body.issue_date,
-        Number(req.body.amount),
-        req.file.originalname,
-        req.file.mimetype,
-        stored.storage,
-        stored.key,
-      ]
-    );
-
-    const validationResult = await runAdvanceSunatValidation(inserted.rows[0].id);
-    const finalRow = await query(advanceSelect + " WHERE ar.id=$1", [inserted.rows[0].id]);
-    res.status(201).json({ row: finalRow.rows[0], validation: validationResult });
-  } catch (error) {
-    dbError(res, error);
-  }
-});
-
-app.put("/api/advances/:id", upload.single("document"), async (req, res) => {
-  const validation = validateExpenseInput(req.body);
+app.post("/api/advances", async (req, res) => {
+  const validation = validateAdvanceRequest(req.body);
   if (validation) return res.status(400).json({ error: validation });
 
   try {
-    const current = await query("SELECT * FROM advance_reports WHERE id=$1", [req.params.id]);
-    if (!current.rows[0]) return res.status(404).json({ error: "Anticipo no encontrado." });
+    const project = await query("SELECT id FROM projects WHERE id=$1", [req.body.project_id]);
+    if (!project.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
 
-    const projectCheck = await query(
-      "SELECT id, producer_id FROM projects WHERE id=$1",
-      [req.body.project_id]
-    );
-    if (!projectCheck.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
-    if (Number(projectCheck.rows[0].producer_id) !== Number(req.body.producer_id)) {
-      return res.status(400).json({ error: "El productor seleccionado no corresponde al proyecto." });
-    }
-
-    const linkCheck = await query(
-      "SELECT 1 FROM project_event_concepts WHERE project_id=$1 AND concept_id=$2",
-      [req.body.project_id, req.body.concept_id]
-    );
-    if (!linkCheck.rows[0]) {
-      return res.status(400).json({ error: "El concepto seleccionado no está asignado a este proyecto." });
-    }
-
-    let fileName = current.rows[0].file_name;
-    let fileMime = current.rows[0].file_mime;
-    let fileStorage = current.rows[0].file_storage;
-    let fileKey = current.rows[0].file_key;
-
-    if (req.file) {
-      const stored = await saveEvidence(req.file);
-      fileName = req.file.originalname;
-      fileMime = req.file.mimetype;
-      fileStorage = stored.storage;
-      fileKey = stored.key;
-    }
-
-    await query(
-      `UPDATE advance_reports SET
-        project_id=$1,
-        concept_id=$2,
-        producer_id=$3,
-        document_type=$4,
-        issuer_ruc=$5,
-        series=$6,
-        document_number=$7,
-        issue_date=$8,
-        amount=$9,
-        file_name=$10,
-        file_mime=$11,
-        file_storage=$12,
-        file_key=$13,
-        validation_status='PENDIENTE',
-        sunat_estado_cp=NULL,
-        sunat_estado_ruc=NULL,
-        sunat_cond_domi_ruc=NULL,
-        sunat_message=NULL,
-        sunat_observations='[]'::jsonb,
-        sunat_response=NULL,
-        validated_at=NULL
-       WHERE id=$14`,
-      [
-        Number(req.body.project_id),
-        Number(req.body.concept_id),
-        Number(req.body.producer_id),
-        String(req.body.document_type),
-        String(req.body.issuer_ruc).trim(),
-        String(req.body.series).trim().toUpperCase(),
-        String(req.body.document_number).trim(),
-        req.body.issue_date,
-        Number(req.body.amount),
-        fileName,
-        fileMime,
-        fileStorage,
-        fileKey,
-        req.params.id,
-      ]
+    const result = await query(
+      `INSERT INTO advance_requests (
+        company, request_date, applicant_name, account_number, account_type,
+        account_holder, bank, cci, beneficiary_document, beneficiary_name,
+        amount, project_id, deposit_date, settlement_date, observations,
+        expected_document_type
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+      ) RETURNING *`,
+      advanceRequestValues(req.body)
     );
 
-    const validationResult = await runAdvanceSunatValidation(req.params.id);
-    const finalRow = await query(advanceSelect + " WHERE ar.id=$1", [req.params.id]);
-    res.json({ row: finalRow.rows[0], validation: validationResult });
+    const row = await query(advanceRequestSelect + " WHERE ar.id=$1", [result.rows[0].id]);
+    res.status(201).json(row.rows[0]);
   } catch (error) {
     dbError(res, error);
   }
 });
 
-app.post("/api/advances/:id/validate", async (req, res) => {
+app.put("/api/advances/:id", async (req, res) => {
+  const validation = validateAdvanceRequest(req.body);
+  if (validation) return res.status(400).json({ error: validation });
+
   try {
-    const result = await runAdvanceSunatValidation(req.params.id);
-    const row = await query(advanceSelect + " WHERE ar.id=$1", [req.params.id]);
-    if (!row.rows[0]) return res.status(404).json({ error: "Anticipo no encontrado." });
-    res.json({ row: row.rows[0], validation: result });
+    const values = [...advanceRequestValues(req.body), req.params.id];
+    const result = await query(
+      `UPDATE advance_requests SET
+        company=$1,
+        request_date=$2,
+        applicant_name=$3,
+        account_number=$4,
+        account_type=$5,
+        account_holder=$6,
+        bank=$7,
+        cci=$8,
+        beneficiary_document=$9,
+        beneficiary_name=$10,
+        amount=$11,
+        project_id=$12,
+        deposit_date=$13,
+        settlement_date=$14,
+        observations=$15,
+        expected_document_type=$16,
+        updated_at=NOW()
+       WHERE id=$17
+       RETURNING id`,
+      values
+    );
+
+    if (!result.rows[0]) return res.status(404).json({ error: "Anticipo no encontrado." });
+
+    const row = await query(advanceRequestSelect + " WHERE ar.id=$1", [req.params.id]);
+    res.json(row.rows[0]);
   } catch (error) {
     dbError(res, error);
   }
@@ -776,11 +648,99 @@ app.post("/api/advances/:id/validate", async (req, res) => {
 
 app.delete("/api/advances/:id", async (req, res) => {
   try {
-    const result = await query("DELETE FROM advance_reports WHERE id=$1 RETURNING id", [req.params.id]);
+    const result = await query("DELETE FROM advance_requests WHERE id=$1 RETURNING id", [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: "Anticipo no encontrado." });
     res.json({ ok: true });
   } catch (error) {
     dbError(res, error);
+  }
+});
+
+function pdfDate(value) {
+  const raw = String(value || "").slice(0,10);
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? m[3]+"/"+m[2]+"/"+m[1] : raw;
+}
+
+function drawPdfField(doc, label, value, y, options={}) {
+  const xLabel = 50;
+  const xValue = 210;
+  doc.font("Helvetica-Bold").fontSize(9).text(label, xLabel, y, { width: 150 });
+  doc.font("Helvetica").fontSize(9).text(String(value ?? ""), xValue, y, { width: options.width || 330 });
+  doc.moveTo(xValue, y+13).lineTo(545, y+13).strokeColor("#B8B8B8").lineWidth(0.5).stroke();
+}
+
+app.get("/api/advances/:id/pdf", async (req, res) => {
+  try {
+    const result = await query(advanceRequestSelect + " WHERE ar.id=$1", [req.params.id]);
+    const row = result.rows[0];
+    if (!row) return res.status(404).json({ error: "Anticipo no encontrado." });
+
+    const doc = new PDFDocument({ size: "A4", margin: 40 });
+    const filename = "anticipo-" + String(row.project_code || row.id).replace(/[^A-Za-z0-9_-]/g, "_") + ".pdf";
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      (req.query.download === "1" ? "attachment" : "inline") + '; filename="' + filename + '"'
+    );
+
+    doc.pipe(res);
+
+    doc.rect(40,40,515,70).strokeColor("#000000").lineWidth(1).stroke();
+    doc.font("Helvetica-Bold").fontSize(26).text("b",55,55,{width:35});
+    doc.fontSize(13).text("below",88,58);
+    doc.fontSize(8).text("GROUP",88,76);
+
+    doc.font("Helvetica-Bold").fontSize(11)
+      .text("FORMATO - REQUERIMIENTO DE ANTICIPOS\nY OTROS GASTOS",185,58,{width:235,align:"center"});
+
+    doc.fontSize(8).text("Código",430,47);
+    doc.font("Helvetica").text("BL-F-RA-01",485,47);
+    doc.font("Helvetica-Bold").text("Versión",430,65);
+    doc.font("Helvetica").text("0",485,65);
+    doc.font("Helvetica-Bold").text("Fecha",430,83);
+    doc.font("Helvetica").text(pdfDate(row.request_date),485,83);
+
+    let y=130;
+    drawPdfField(doc,"Empresa :",row.company,y); y+=28;
+    drawPdfField(doc,"Fecha de solicitud :",pdfDate(row.request_date),y); y+=34;
+    drawPdfField(doc,"Datos de solicitante :",row.applicant_name,y); y+=34;
+    drawPdfField(doc,"Número de cuenta :",row.account_number,y); y+=26;
+    drawPdfField(doc,"Tipo de cuenta :",row.account_type === "AHORRO" ? "AHORRO" : "CTE",y); y+=26;
+    drawPdfField(doc,"Titular de la Cta. :",row.account_holder,y); y+=26;
+    drawPdfField(doc,"Banco :",row.bank,y); y+=26;
+    drawPdfField(doc,"CCI :",row.cci || "",y); y+=26;
+    drawPdfField(doc,"RUC / DNI :",row.beneficiary_document,y); y+=34;
+
+    doc.font("Helvetica-Bold").fontSize(9).text("Razón Social / Nombre (beneficiario):",50,y,{width:155});
+    doc.rect(210,y-8,335,44).strokeColor("#B8B8B8").stroke();
+    doc.font("Helvetica").fontSize(12).text(row.beneficiary_name,225,y+6,{width:305,align:"center"});
+    y+=58;
+
+    drawPdfField(doc,"Monto a depositar :","S/ " + Number(row.amount).toFixed(2),y); y+=24;
+    drawPdfField(doc,"Código de Proyecto :",row.project_code,y); y+=24;
+    drawPdfField(doc,"Nombre de proyecto :",row.project_name,y); y+=24;
+    drawPdfField(doc,"Cliente :",row.client_name,y); y+=24;
+    drawPdfField(doc,"Fecha de abono :",pdfDate(row.deposit_date),y); y+=24;
+    drawPdfField(doc,"Fecha de rendición :",pdfDate(row.settlement_date),y); y+=34;
+
+    doc.font("Helvetica-Bold").fontSize(9).text("Motivo u Observaciones :",50,y,{width:150});
+    doc.rect(210,y-8,335,48).strokeColor("#B8B8B8").stroke();
+    doc.font("Helvetica").fontSize(9).text(row.observations,220,y,{width:315,height:35});
+    y+=62;
+
+    drawPdfField(
+      doc,
+      "Tipo de comprobante a entregar :",
+      row.expected_document_type === "RH" ? "RH" : row.expected_document_type,
+      y
+    );
+
+    doc.end();
+  } catch (error) {
+    console.error(error);
+    if (!res.headersSent) res.status(500).json({ error: "No se pudo generar el PDF del anticipo." });
   }
 });
 

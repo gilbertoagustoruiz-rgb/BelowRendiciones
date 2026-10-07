@@ -3,6 +3,7 @@ import cors from "cors";
 import multer from "multer";
 import "dotenv/config";
 import PDFDocument from "pdfkit";
+import bcrypt from "bcryptjs";
 import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, validateCpe } from "./sunat.js";
@@ -30,9 +31,6 @@ app.use(express.static("public"));
 
 const catalogs = {
   clients: { table: "clients", fields: ["name", "ruc", "responsible_person"], required: ["name", "ruc", "responsible_person"] },
-  producers: { table: "producers", fields: ["name", "dni"], required: ["name", "dni"] },
-  subproducers: { table: "subproducers", fields: ["name", "dni"], required: ["name", "dni"] },
-  executives: { table: "executives", fields: ["name", "dni"], required: ["name", "dni"] },
   concepts: { table: "event_concepts", fields: ["name"], required: ["name"] },
 };
 
@@ -48,9 +46,6 @@ function requiredError(body, fields) {
 function identityError(type, body) {
   if (type === "clients" && body.ruc && !/^\d{11}$/.test(String(body.ruc).trim())) {
     return "El RUC debe contener exactamente 11 dígitos.";
-  }
-  if (["producers", "subproducers", "executives"].includes(type) && body.dni && !/^\d{8}$/.test(String(body.dni).trim())) {
-    return "El DNI debe contener exactamente 8 dígitos.";
   }
   return null;
 }
@@ -131,14 +126,128 @@ app.delete("/api/:type/:id", async (req, res, next) => {
   } catch (error) { dbError(res, error); }
 });
 
+app.get("/api/personnel", async (_req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, full_name, document_number, profile, status,
+              (password_hash IS NOT NULL) AS password_configured,
+              created_at, updated_at
+       FROM personnel
+       ORDER BY full_name ASC, profile ASC`
+    );
+    res.json(result.rows);
+  } catch (error) {
+    dbError(res, error);
+  }
+});
+
+function validatePersonnel(body, editing=false) {
+  const required = ["full_name","document_number","profile","status"];
+  const missing = requiredError(body, required);
+  if (missing) return missing;
+
+  if (!["PRODUCTOR","SUB PRODUCTOR","EJECUTIVO"].includes(String(body.profile))) {
+    return "Perfil inválido.";
+  }
+  if (!["ACTIVO","INACTIVO"].includes(String(body.status))) {
+    return "Estado inválido.";
+  }
+  if (!/^[A-Za-z0-9-]{6,20}$/.test(String(body.document_number).trim())) {
+    return "DNI / Pasaporte debe tener entre 6 y 20 caracteres alfanuméricos.";
+  }
+  if (!editing && (!body.password || String(body.password).length < 6)) {
+    return "La contraseña debe tener al menos 6 caracteres.";
+  }
+  if (body.password && String(body.password).length < 6) {
+    return "La nueva contraseña debe tener al menos 6 caracteres.";
+  }
+  return null;
+}
+
+app.post("/api/personnel", async (req, res) => {
+  const validation = validatePersonnel(req.body, false);
+  if (validation) return res.status(400).json({ error: validation });
+
+  try {
+    const passwordHash = await bcrypt.hash(String(req.body.password), 12);
+    const result = await query(
+      `INSERT INTO personnel
+       (full_name, document_number, profile, password_hash, status)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id, full_name, document_number, profile, status,
+                 true AS password_configured, created_at, updated_at`,
+      [
+        String(req.body.full_name).trim(),
+        String(req.body.document_number).trim().toUpperCase(),
+        String(req.body.profile),
+        passwordHash,
+        String(req.body.status),
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    dbError(res, error);
+  }
+});
+
+app.put("/api/personnel/:id", async (req, res) => {
+  const validation = validatePersonnel(req.body, true);
+  if (validation) return res.status(400).json({ error: validation });
+
+  try {
+    const current = await query("SELECT id FROM personnel WHERE id=$1", [req.params.id]);
+    if (!current.rows[0]) return res.status(404).json({ error: "Personal no encontrado." });
+
+    let passwordHash = null;
+    if (req.body.password) {
+      passwordHash = await bcrypt.hash(String(req.body.password), 12);
+    }
+
+    const result = await query(
+      `UPDATE personnel SET
+        full_name=$1,
+        document_number=$2,
+        profile=$3,
+        status=$4,
+        password_hash=COALESCE($5,password_hash),
+        updated_at=NOW()
+       WHERE id=$6
+       RETURNING id, full_name, document_number, profile, status,
+                 (password_hash IS NOT NULL) AS password_configured,
+                 created_at, updated_at`,
+      [
+        String(req.body.full_name).trim(),
+        String(req.body.document_number).trim().toUpperCase(),
+        String(req.body.profile),
+        String(req.body.status),
+        passwordHash,
+        req.params.id,
+      ]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    dbError(res, error);
+  }
+});
+
+app.delete("/api/personnel/:id", async (req, res) => {
+  try {
+    const result = await query("DELETE FROM personnel WHERE id=$1 RETURNING id", [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Personal no encontrado." });
+    res.json({ ok: true });
+  } catch (error) {
+    dbError(res, error);
+  }
+});
+
 const projectSelect = `
 SELECT
   p.*,
   c.name AS client_name,
   c.ruc AS client_ruc,
-  pr.name AS producer_name,
-  sp.name AS subproducer_name,
-  e.name AS executive_name,
+  pr.full_name AS producer_name,
+  sp.full_name AS subproducer_name,
+  e.full_name AS executive_name,
   COALESCE(
     json_agg(json_build_object('id', ec.id, 'name', ec.name) ORDER BY ec.name)
       FILTER (WHERE ec.id IS NOT NULL),
@@ -146,9 +255,9 @@ SELECT
   ) AS concepts
 FROM projects p
 JOIN clients c ON c.id = p.client_id
-JOIN producers pr ON pr.id = p.producer_id
-LEFT JOIN subproducers sp ON sp.id = p.subproducer_id
-JOIN executives e ON e.id = p.executive_id
+JOIN personnel pr ON pr.id = p.producer_id
+LEFT JOIN personnel sp ON sp.id = p.subproducer_id
+JOIN personnel e ON e.id = p.executive_id
 LEFT JOIN project_event_concepts pec ON pec.project_id = p.id
 LEFT JOIN event_concepts ec ON ec.id = pec.concept_id
 `;
@@ -258,12 +367,12 @@ SELECT
   p.project_name,
   c.name AS client_name,
   ec.name AS concept_name,
-  pr.name AS producer_name
+  pr.full_name AS producer_name
 FROM expense_reports er
 JOIN projects p ON p.id=er.project_id
 JOIN clients c ON c.id=p.client_id
 JOIN event_concepts ec ON ec.id=er.concept_id
-JOIN producers pr ON pr.id=er.producer_id
+JOIN personnel pr ON pr.id=er.producer_id
 `;
 
 app.get("/api/expenses", async (_req, res) => {

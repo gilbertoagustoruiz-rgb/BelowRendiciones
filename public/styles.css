@@ -149,3 +149,106 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   text-decoration: none;
   white-space: nowrap;
 }
+
+.hidden { display: none !important; }
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.auth-view {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f2f5f9;
+}
+
+.auth-card {
+  width: min(460px, 100%);
+  background: #fff;
+  border: 1px solid #dce3ed;
+  border-radius: 18px;
+  padding: 30px;
+  box-shadow: 0 18px 45px rgba(10,31,63,.12);
+}
+
+.auth-brand {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 28px;
+}
+
+.auth-brand strong {
+  display: block;
+  font-size: 20px;
+  color: #0a1f3f;
+}
+
+.auth-brand span {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: #68758a;
+}
+
+.auth-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 22px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #526078;
+}
+
+.auth-form input {
+  width: 100%;
+  border: 1px solid #cfd8e5;
+  border-radius: 10px;
+  padding: 12px 13px;
+  font: inherit;
+}
+
+.auth-copy {
+  color: #647086;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.user-card {
+  margin: 12px 14px 18px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.08);
+  display: grid;
+  gap: 3px;
+}
+
+.user-card strong {
+  color: #fff;
+  font-size: 13px;
+}
+
+.user-card span {
+  color: #b9c7da;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.user-card button {
+  margin-top: 8px;
+  border: 1px solid rgba(255,255,255,.22);
+  background: transparent;
+  color: #fff;
+  border-radius: 8px;
+  padding: 7px 9px;
+  cursor: pointer;
+  text-align: left;
+}

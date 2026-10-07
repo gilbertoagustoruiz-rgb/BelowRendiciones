@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS personnel (
   CONSTRAINT uq_personnel_legacy UNIQUE (legacy_source, legacy_id)
 );
 
-DO $$
+DO $legacy$
 BEGIN
   IF to_regclass('public.producers') IS NOT NULL THEN
     EXECUTE $sql$
@@ -70,7 +70,8 @@ BEGIN
       ON CONFLICT (legacy_source, legacy_id) DO NOTHING
     $sql$;
   END IF;
-END $;
+END
+$legacy$;
 
 ALTER TABLE personnel ADD COLUMN IF NOT EXISTS profile_id BIGINT;
 
@@ -164,7 +165,7 @@ ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_producer_id_fkey;
 ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_subproducer_id_fkey;
 ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_executive_id_fkey;
 
-DO $$
+DO $projects_migration$
 BEGIN
   IF to_regclass('public.producers') IS NOT NULL THEN
     UPDATE projects p
@@ -189,7 +190,8 @@ BEGIN
     WHERE per.legacy_source='executives'
       AND per.legacy_id=p.executive_id;
   END IF;
-END $$;
+END
+$projects_migration$;
 
 ALTER TABLE projects ADD CONSTRAINT projects_producer_id_fkey
   FOREIGN KEY (producer_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT;
@@ -238,7 +240,7 @@ CREATE TABLE IF NOT EXISTS expense_reports (
 
 ALTER TABLE expense_reports DROP CONSTRAINT IF EXISTS expense_reports_producer_id_fkey;
 
-DO $$
+DO $expenses_migration$
 BEGIN
   IF to_regclass('public.producers') IS NOT NULL THEN
     UPDATE expense_reports er
@@ -247,7 +249,8 @@ BEGIN
     WHERE per.legacy_source='producers'
       AND per.legacy_id=er.producer_id;
   END IF;
-END $$;
+END
+$expenses_migration$;
 
 ALTER TABLE expense_reports ADD CONSTRAINT expense_reports_producer_id_fkey
   FOREIGN KEY (producer_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT;

@@ -4,6 +4,7 @@ import multer from "multer";
 import "dotenv/config";
 import PDFDocument from "pdfkit";
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, validateCpe } from "./sunat.js";
@@ -66,6 +67,248 @@ app.get("/api/health", async (_req, res) => {
   } catch (error) {
     res.status(503).json({ ok: false, database: "disconnected", error: error.message });
   }
+});
+
+
+function parseCookies(req) {
+  const header = req.headers.cookie || "";
+  return Object.fromEntries(
+    header.split(";").map((part)=>part.trim()).filter(Boolean).map((part)=>{
+      const index=part.indexOf("=");
+      if (index < 0) return [part,""];
+      return [part.slice(0,index), decodeURIComponent(part.slice(index+1))];
+    })
+  );
+}
+
+function hashSessionToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function setSessionCookie(req, res, token, maxAgeSeconds=60*60*24*7) {
+  const secure = req.secure || req.get("x-forwarded-proto") === "https";
+  const attrs = [
+    "below_session="+encodeURIComponent(token),
+    "HttpOnly",
+    "SameSite=Lax",
+    "Path=/",
+    "Max-Age="+maxAgeSeconds,
+  ];
+  if (secure) attrs.push("Secure");
+  res.setHeader("Set-Cookie", attrs.join("; "));
+}
+
+function clearSessionCookie(req, res) {
+  const secure = req.secure || req.get("x-forwarded-proto") === "https";
+  const attrs = [
+    "below_session=",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Path=/",
+    "Max-Age=0",
+  ];
+  if (secure) attrs.push("Secure");
+  res.setHeader("Set-Cookie", attrs.join("; "));
+}
+
+async function getCurrentUser(req) {
+  const token=parseCookies(req).below_session;
+  if (!token) return null;
+
+  const result=await query(
+    `SELECT per.id, per.full_name, per.document_number, per.status,
+            pr.id AS profile_id, pr.name AS profile
+     FROM auth_sessions s
+     JOIN personnel per ON per.id=s.personnel_id
+     JOIN profiles pr ON pr.id=per.profile_id
+     WHERE s.token_hash=$1
+       AND s.expires_at > NOW()
+       AND per.status='ACTIVO'`,
+    [hashSessionToken(token)]
+  );
+  return result.rows[0] || null;
+}
+
+const ROLE_MODULES = {
+  ADMIN: ["projects","expenses","advances","clients","profiles","personnel","concepts"],
+  COORDINADOR: ["projects","expenses","advances","clients","personnel"],
+  PRODUCTOR: ["expenses","advances"],
+  "SUB PRODUCTOR": ["expenses","advances"],
+  EJECUTIVO: [],
+};
+
+app.get("/api/auth/status", async (_req,res)=>{
+  try {
+    const result=await query(
+      `SELECT COUNT(*)::int AS total
+       FROM personnel per
+       JOIN profiles p ON p.id=per.profile_id
+       WHERE p.name='ADMIN'`
+    );
+    res.json({ bootstrapRequired: Number(result.rows[0].total) === 0 });
+  } catch(error) {
+    dbError(res,error);
+  }
+});
+
+app.post("/api/auth/bootstrap", async (req,res)=>{
+  try {
+    const admins=await query(
+      `SELECT COUNT(*)::int AS total
+       FROM personnel per
+       JOIN profiles p ON p.id=per.profile_id
+       WHERE p.name='ADMIN'`
+    );
+    if (Number(admins.rows[0].total) > 0) {
+      return res.status(409).json({ error:"El administrador inicial ya fue creado." });
+    }
+
+    const missing=requiredError(req.body,["full_name","document_number","password"]);
+    if (missing) return res.status(400).json({ error:missing });
+    if (!/^[A-Za-z0-9-]{6,20}$/.test(String(req.body.document_number).trim())) {
+      return res.status(400).json({ error:"DNI / Pasaporte inválido." });
+    }
+    if (String(req.body.password).length < 6) {
+      return res.status(400).json({ error:"La contraseña debe tener al menos 6 caracteres." });
+    }
+
+    const profile=await query("SELECT id FROM profiles WHERE name='ADMIN'");
+    if (!profile.rows[0]) return res.status(500).json({ error:"Perfil ADMIN no disponible." });
+
+    const hash=await bcrypt.hash(String(req.body.password),12);
+    const created=await query(
+      `INSERT INTO personnel (full_name,document_number,profile_id,password_hash,status)
+       VALUES ($1,$2,$3,$4,'ACTIVO')
+       RETURNING id`,
+      [
+        String(req.body.full_name).trim(),
+        String(req.body.document_number).trim().toUpperCase(),
+        profile.rows[0].id,
+        hash,
+      ]
+    );
+
+    const token=crypto.randomBytes(32).toString("hex");
+    await query(
+      "INSERT INTO auth_sessions (personnel_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '7 days')",
+      [created.rows[0].id,hashSessionToken(token)]
+    );
+    setSessionCookie(req,res,token);
+    res.status(201).json({ ok:true });
+  } catch(error) {
+    dbError(res,error);
+  }
+});
+
+app.post("/api/auth/login", async (req,res)=>{
+  try {
+    const missing=requiredError(req.body,["document_number","password"]);
+    if (missing) return res.status(400).json({ error:missing });
+
+    const result=await query(
+      `SELECT per.id, per.full_name, per.document_number, per.password_hash, per.status,
+              p.id AS profile_id, p.name AS profile
+       FROM personnel per
+       JOIN profiles p ON p.id=per.profile_id
+       WHERE UPPER(per.document_number)=UPPER($1)
+       LIMIT 1`,
+      [String(req.body.document_number).trim()]
+    );
+    const user=result.rows[0];
+    if (!user || !user.password_hash || user.status !== "ACTIVO") {
+      return res.status(401).json({ error:"Documento o contraseña incorrectos." });
+    }
+
+    const ok=await bcrypt.compare(String(req.body.password),user.password_hash);
+    if (!ok) return res.status(401).json({ error:"Documento o contraseña incorrectos." });
+
+    const token=crypto.randomBytes(32).toString("hex");
+    await query(
+      "INSERT INTO auth_sessions (personnel_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '7 days')",
+      [user.id,hashSessionToken(token)]
+    );
+    setSessionCookie(req,res,token);
+    res.json({
+      id:user.id,
+      full_name:user.full_name,
+      document_number:user.document_number,
+      profile:user.profile,
+      modules:ROLE_MODULES[user.profile] || [],
+    });
+  } catch(error) {
+    dbError(res,error);
+  }
+});
+
+app.post("/api/auth/logout", async (req,res)=>{
+  try {
+    const token=parseCookies(req).below_session;
+    if (token) await query("DELETE FROM auth_sessions WHERE token_hash=$1",[hashSessionToken(token)]);
+    clearSessionCookie(req,res);
+    res.json({ ok:true });
+  } catch(error) {
+    dbError(res,error);
+  }
+});
+
+app.get("/api/auth/me", async (req,res)=>{
+  try {
+    const user=await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error:"No autenticado." });
+    res.json({ ...user, modules:ROLE_MODULES[user.profile] || [] });
+  } catch(error) {
+    dbError(res,error);
+  }
+});
+
+async function requireAuth(req,res,next) {
+  try {
+    const user=await getCurrentUser(req);
+    if (!user) return res.status(401).json({ error:"Sesión no válida o expirada." });
+    req.user=user;
+    next();
+  } catch(error) {
+    dbError(res,error);
+  }
+}
+
+function canManageModule(user,module,method) {
+  if (user.profile === "ADMIN") return true;
+
+  if (user.profile === "COORDINADOR") {
+    if (["expenses","advances","clients","projects","personnel"].includes(module)) return true;
+    if (["profiles","concepts"].includes(module)) return method === "GET";
+    return false;
+  }
+
+  if (["PRODUCTOR","SUB PRODUCTOR"].includes(user.profile)) {
+    if (["expenses","advances"].includes(module)) return true;
+    if (["projects","clients","personnel","profiles","concepts"].includes(module)) return method === "GET";
+    return false;
+  }
+
+  return false;
+}
+
+function moduleFromApiPath(path) {
+  const first=String(path || "").split("/").filter(Boolean)[0] || "";
+  if (first === "projects") return "projects";
+  if (first === "expenses") return "expenses";
+  if (first === "advances") return "advances";
+  if (first === "clients") return "clients";
+  if (first === "profiles") return "profiles";
+  if (first === "personnel") return "personnel";
+  if (first === "concepts") return "concepts";
+  return null;
+}
+
+app.use("/api", requireAuth, (req,res,next)=>{
+  const module=moduleFromApiPath(req.path);
+  if (!module) return next();
+  if (!canManageModule(req.user,module,req.method)) {
+    return res.status(403).json({ error:"No tienes permiso para realizar esta acción." });
+  }
+  next();
 });
 
 app.get("/api/:type", async (req, res, next) => {

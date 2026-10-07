@@ -257,7 +257,7 @@ INSERT INTO event_concepts (name) VALUES
   ('DISEÑO Y PRODUCCIÓN')
 ON CONFLICT (name) DO NOTHING;
 
-DO $
+DO $migration$
 BEGIN
   IF to_regclass('public.advance_reports') IS NOT NULL THEN
     ALTER TABLE advance_reports DROP CONSTRAINT IF EXISTS advance_reports_producer_id_fkey;
@@ -273,9 +273,10 @@ BEGIN
     ALTER TABLE advance_reports ADD CONSTRAINT advance_reports_producer_id_fkey
       FOREIGN KEY (producer_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT;
   END IF;
-END $;
+END
+$migration$;
 
-DO $
+DO $cleanup$
 BEGIN
   IF to_regclass('public.producers') IS NOT NULL THEN
     EXECUTE 'DROP TABLE producers';
@@ -286,6 +287,7 @@ BEGIN
   IF to_regclass('public.executives') IS NOT NULL THEN
     EXECUTE 'DROP TABLE executives';
   END IF;
-END $$;
+END
+$cleanup$;
 
 COMMIT;

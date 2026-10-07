@@ -89,11 +89,15 @@ async function loadCurrent() {
   try {
     if (state.module === "projects") await loadCatalogs();
 
-    if (["expenses","advances"].includes(state.module)) {
+    if (state.module === "expenses") {
       await Promise.all([loadCatalogs(), loadProjects()]);
-      const result = await request(API + "/" + state.module);
+      const result = await request(API + "/expenses");
       state.rows = result.rows;
       state.sunatConfigured = Boolean(result.sunatConfigured);
+    } else if (state.module === "advances") {
+      await loadProjects();
+      const result = await request(API + "/advances");
+      state.rows = result.rows;
     } else {
       state.rows = await request(API + "/" + state.module);
     }
@@ -110,6 +114,67 @@ function filteredRows() {
 }
 
 function renderStats() {
+  if (state.module === "advances") {
+    $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVO";
+
+    const today=new Date().toISOString().slice(0,10);
+    $("#formFields").innerHTML=[
+      selectHtml("company","Empresa",[
+        {value:"BELOW SAC",label:"Below SAC"},
+        {value:"BELOW TRADE SAC",label:"Below Trade SAC"}
+      ],row?.company || "BELOW SAC",true),
+      inputField("request_date","Fecha de solicitud","date",row ? String(row.request_date).slice(0,10) : today),
+      inputField("applicant_name","Datos del solicitante","text",row?.applicant_name || ""),
+      inputField("account_number","Número de cuenta","text",row?.account_number || "",'maxlength="40"'),
+      selectHtml("account_type","Tipo de cuenta",[
+        {value:"AHORRO",label:"Ahorro"},
+        {value:"CTE",label:"Cuenta Corriente"}
+      ],row?.account_type || "AHORRO",true),
+      inputField("account_holder","Titular de la cuenta","text",row?.account_holder || ""),
+      inputField("bank","Banco","text",row?.bank || ""),
+      inputField("cci","CCI","text",row?.cci || "",'maxlength="40"'),
+      inputField("beneficiary_document","RUC / DNI","text",row?.beneficiary_document || "",'maxlength="20"'),
+      inputField("beneficiary_name","Razón Social / Nombre (beneficiario)","text",row?.beneficiary_name || ""),
+      inputField("amount","Monto a depositar (S/)","number",row?.amount || "",'min="0.01" step="0.01"'),
+      selectHtml(
+        "project_id",
+        "Proyecto",
+        state.projects.map((p)=>({value:p.id,label:p.project_code+" · "+p.project_name+" · "+p.client_name})),
+        row?.project_id ?? null,
+        true
+      ),
+      '<div class="field"><label>Código de Proyecto</label><input id="advanceProjectCode" type="text" value="'+esc(row?.project_code || "")+'" readonly></div>',
+      '<div class="field"><label>Nombre de Proyecto</label><input id="advanceProjectName" type="text" value="'+esc(row?.project_name || "")+'" readonly></div>',
+      '<div class="field"><label>Cliente</label><input id="advanceClientName" type="text" value="'+esc(row?.client_name || "")+'" readonly></div>',
+      inputField("deposit_date","Fecha de abono","date",row ? String(row.deposit_date).slice(0,10) : ""),
+      inputField("settlement_date","Fecha de rendición","date",row ? String(row.settlement_date).slice(0,10) : ""),
+      '<div class="field full"><label>Motivo u Observaciones</label><textarea name="observations" rows="3" required>'+esc(row?.observations || "")+'</textarea></div>',
+      selectHtml("expected_document_type","Tipo de comprobante a entregar",[
+        {value:"RH",label:"RH - Recibo por Honorarios"},
+        {value:"FACTURA",label:"Factura"},
+        {value:"BOLETA",label:"Boleta"},
+        {value:"OTRO",label:"Otro"}
+      ],row?.expected_document_type || "FACTURA",true)
+    ].join("");
+
+    const syncProject=()=>{
+      const select=form.querySelector('[name="project_id"]');
+      const p=state.projects.find((item)=>String(item.id)===String(select?.value));
+      const code=$("#advanceProjectCode");
+      const name=$("#advanceProjectName");
+      const client=$("#advanceClientName");
+      if(code) code.value=p?.project_code || "";
+      if(name) name.value=p?.project_name || "";
+      if(client) client.value=p?.client_name || "";
+    };
+    form.querySelector('[name="project_id"]').addEventListener("change",syncProject);
+    syncProject();
+
+    showHelp("El anticipo genera su propio formato BL-F-RA-01. Código, nombre de proyecto y cliente se completan automáticamente.");
+    modal.showModal();
+    return;
+  }
+
   if (state.module === "projects") {
     const clients = new Set(state.rows.map((r) => r.client_id)).size;
     const concepts = state.rows.reduce((sum, r) => sum + (r.concepts?.length || 0), 0);
@@ -120,14 +185,23 @@ function renderStats() {
     return;
   }
 
-  if (["expenses","advances"].includes(state.module)) {
+  if (state.module === "expenses") {
     const valid = state.rows.filter((r) => r.validation_status === "VALIDADO").length;
     const pending = state.rows.filter((r) => !["VALIDADO","ANULADO","NO_EXISTE"].includes(r.validation_status)).length;
-    const label = state.module === "advances" ? "Anticipos registrados" : "Rendiciones registradas";
     $("#stats").innerHTML = `
-      <div class="stat"><span>${label}</span><strong>${state.rows.length}</strong></div>
+      <div class="stat"><span>Rendiciones registradas</span><strong>${state.rows.length}</strong></div>
       <div class="stat"><span>Validadas SUNAT</span><strong>${valid}</strong></div>
       <div class="stat"><span>Pendientes / revisar</span><strong>${pending}</strong></div>`;
+    return;
+  }
+
+  if (state.module === "advances") {
+    const total = state.rows.reduce((sum,r)=>sum+Number(r.amount || 0),0);
+    const upcoming = state.rows.filter((r)=>String(r.deposit_date || "").slice(0,10) >= new Date().toISOString().slice(0,10)).length;
+    $("#stats").innerHTML = `
+      <div class="stat"><span>Anticipos registrados</span><strong>${state.rows.length}</strong></div>
+      <div class="stat"><span>Monto solicitado</span><strong>S/ ${total.toFixed(2)}</strong></div>
+      <div class="stat"><span>Abonos programados</span><strong>${upcoming}</strong></div>`;
     return;
   }
 
@@ -181,7 +255,7 @@ function render() {
         <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
       </td>
     </tr>`).join("") : emptyRow(14);
-  } else if (["expenses","advances"].includes(state.module)) {
+  } else if (state.module === "expenses") {
     thead.innerHTML = `<tr>
       <th>Proyecto</th><th>Concepto</th><th>Productor</th><th>Comprobante</th>
       <th>Fecha</th><th>Importe</th><th>Archivo</th><th>SUNAT</th><th>Detalle SUNAT</th><th>Acciones</th>
@@ -194,7 +268,7 @@ function render() {
         <strong>${esc(r.series)}-${esc(r.document_number)}</strong><br><small>RUC ${esc(r.issuer_ruc)}</small></td>
       <td>${formatDateDisplay(r.issue_date)}</td>
       <td>S/ ${Number(r.amount).toFixed(2)}</td>
-      <td><a class="file-link" target="_blank" href="${API}/${state.module}/${r.id}/file">Abrir documento</a></td>
+      <td><a class="file-link" target="_blank" href="${API}/expenses/${r.id}/file">Abrir documento</a></td>
       <td>${statusBadge(r.validation_status)}</td>
       <td><small>CP: ${esc(r.sunat_estado_cp ?? "—")} · RUC: ${esc(r.sunat_estado_ruc ?? "—")} · Domicilio: ${esc(r.sunat_cond_domi_ruc ?? "—")}<br>${esc(r.sunat_message || "")}</small></td>
       <td class="actions">
@@ -203,6 +277,27 @@ function render() {
         <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
       </td>
     </tr>`).join("") : emptyRow(10);
+  } else if (state.module === "advances") {
+    thead.innerHTML = `<tr>
+      <th>Solicitud</th><th>Solicitante</th><th>Beneficiario</th><th>Proyecto</th>
+      <th>Monto</th><th>Abono</th><th>Rendición</th><th>Comprobante</th><th>Acciones</th>
+    </tr>`;
+    tbody.innerHTML = rows.length ? rows.map((r) => `<tr>
+      <td><strong>${esc(r.company)}</strong><br><small>${formatDateDisplay(r.request_date)}</small></td>
+      <td>${esc(r.applicant_name)}<br><small>${esc(r.bank)} · ${esc(r.account_type)}</small></td>
+      <td>${esc(r.beneficiary_name)}<br><small>${esc(r.beneficiary_document)}</small></td>
+      <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}<br><small>${esc(r.client_name)}</small></td>
+      <td><strong>S/ ${Number(r.amount || 0).toFixed(2)}</strong></td>
+      <td>${formatDateDisplay(r.deposit_date)}</td>
+      <td>${formatDateDisplay(r.settlement_date)}</td>
+      <td>${esc(r.expected_document_type)}</td>
+      <td class="actions">
+        <button class="action-btn" data-edit="${r.id}">Editar</button>
+        <a class="action-btn" target="_blank" href="${API}/advances/${r.id}/pdf">Ver Solicitud</a>
+        <a class="action-btn" href="${API}/advances/${r.id}/pdf?download=1">Descargar PDF</a>
+        <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
+      </td>
+    </tr>`).join("") : emptyRow(9);
   } else {
     const defs = fields[state.module];
     thead.innerHTML = `<tr>${defs.map(([,label]) => "<th>"+label+"</th>").join("")}<th>Acciones</th></tr>`;
@@ -322,7 +417,7 @@ function openForm(row=null) {
   $("#modalTitle").textContent=modules[state.module].singular;
   showHelp("");
 
-  if (["expenses","advances"].includes(state.module)) {
+  if (state.module === "expenses") {
     $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVO";
 
     const selectedProject = row
@@ -443,10 +538,10 @@ form.addEventListener("submit",async(event)=>{
   event.preventDefault();
 
   try {
-    if (["expenses","advances"].includes(state.module)) {
+    if (state.module==="expenses") {
       const data=new FormData(form);
       const isEditing=Boolean(state.editing);
-      const url=isEditing ? API+"/"+state.module+"/"+state.editing.id : API+"/"+state.module;
+      const url=isEditing ? API+"/expenses/"+state.editing.id : API+"/expenses";
       const result=await request(url,{method:isEditing ? "PUT" : "POST",body:data});
       modal.close();
       const status=result.validation?.status || "PENDIENTE";
@@ -456,6 +551,17 @@ form.addEventListener("submit",async(event)=>{
           : (status==="VALIDADO" ? "Rendición guardada y comprobante VALIDADO en SUNAT." : "Rendición guardada. Estado SUNAT: "+status),
         status==="ERROR"
       );
+      await loadCurrent();
+      return;
+    }
+
+    if (state.module==="advances") {
+      const data=Object.fromEntries(new FormData(form).entries());
+      const isEditing=Boolean(state.editing);
+      const url=isEditing ? API+"/advances/"+state.editing.id : API+"/advances";
+      await request(url,{method:isEditing ? "PUT" : "POST",body:JSON.stringify(data)});
+      modal.close();
+      toast(isEditing ? "Anticipo actualizado correctamente." : "Anticipo creado correctamente.");
       await loadCurrent();
       return;
     }

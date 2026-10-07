@@ -8,10 +8,58 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <section id="authView" class="auth-view hidden">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="brand-mark">B</div>
+        <div><strong>Below</strong><span>Rendiciones</span></div>
+      </div>
+      <div id="loginPanel">
+        <p class="eyebrow">ACCESO AL SISTEMA</p>
+        <h1>Iniciar sesión</h1>
+        <form id="loginForm" class="auth-form">
+          <label>DNI / Pasaporte
+            <input name="document_number" type="text" autocomplete="username" required />
+          </label>
+          <label>Contraseña
+            <input name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit" class="primary">Ingresar</button>
+        </form>
+      </div>
+      <div id="bootstrapPanel" class="hidden">
+        <p class="eyebrow">CONFIGURACIÓN INICIAL</p>
+        <h1>Crear administrador</h1>
+        <p class="auth-copy">Aún no existe un usuario ADMIN. Este formulario se desactiva automáticamente después de crear el primero.</p>
+        <form id="bootstrapForm" class="auth-form">
+          <label>Nombre completo
+            <input name="full_name" type="text" required />
+          </label>
+          <label>DNI / Pasaporte
+            <input name="document_number" type="text" required />
+          </label>
+          <label>Contraseña
+            <input name="password" type="password" minlength="6" required />
+          </label>
+          <label>Confirmar contraseña
+            <input name="password_confirm" type="password" minlength="6" required />
+          </label>
+          <button type="submit" class="primary">Crear ADMIN</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <div id="appShell" class="app-shell hidden">
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-mark">B</div>
       <div><strong>Below</strong><span>Rendiciones</span></div>
+    </div>
+    <div class="user-card">
+      <strong id="currentUserName">—</strong>
+      <span id="currentUserProfile">—</span>
+      <button id="logoutBtn" type="button">Cerrar sesión</button>
     </div>
     <nav id="nav"></nav>
   </aside>
@@ -59,6 +107,7 @@
     </form>
   </dialog>
 
+  </div>
   <div id="toast"></div>
   <script type="module" src="/app.js"></script>
 </body>

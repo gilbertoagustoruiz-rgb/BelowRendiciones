@@ -418,8 +418,11 @@ app.post("/api/personnel", async (req, res) => {
   if (validation) return res.status(400).json({ error: validation });
 
   try {
-    const profile = await query("SELECT id FROM profiles WHERE id=$1", [req.body.profile_id]);
+    const profile = await query("SELECT id, name FROM profiles WHERE id=$1", [req.body.profile_id]);
     if (!profile.rows[0]) return res.status(400).json({ error: "El perfil seleccionado no existe." });
+    if (req.user.profile === "COORDINADOR" && ["ADMIN","COORDINADOR"].includes(profile.rows[0].name)) {
+      return res.status(403).json({ error: "El Coordinador no puede asignar perfiles ADMIN o COORDINADOR." });
+    }
 
     const passwordHash = await bcrypt.hash(String(req.body.password), 12);
     const result = await query(
@@ -447,11 +450,22 @@ app.put("/api/personnel/:id", async (req, res) => {
   if (validation) return res.status(400).json({ error: validation });
 
   try {
-    const profile = await query("SELECT id FROM profiles WHERE id=$1", [req.body.profile_id]);
+    const profile = await query("SELECT id, name FROM profiles WHERE id=$1", [req.body.profile_id]);
     if (!profile.rows[0]) return res.status(400).json({ error: "El perfil seleccionado no existe." });
+    if (req.user.profile === "COORDINADOR" && ["ADMIN","COORDINADOR"].includes(profile.rows[0].name)) {
+      return res.status(403).json({ error: "El Coordinador no puede asignar perfiles ADMIN o COORDINADOR." });
+    }
 
-    const current = await query("SELECT id FROM personnel WHERE id=$1", [req.params.id]);
+    const current = await query(
+      `SELECT per.id, p.name AS current_profile
+       FROM personnel per JOIN profiles p ON p.id=per.profile_id
+       WHERE per.id=$1`,
+      [req.params.id]
+    );
     if (!current.rows[0]) return res.status(404).json({ error: "Personal no encontrado." });
+    if (req.user.profile === "COORDINADOR" && ["ADMIN","COORDINADOR"].includes(current.rows[0].current_profile)) {
+      return res.status(403).json({ error: "El Coordinador no puede modificar usuarios ADMIN o COORDINADOR." });
+    }
 
     let passwordHash = null;
     if (req.body.password) {
@@ -487,6 +501,17 @@ app.put("/api/personnel/:id", async (req, res) => {
 
 app.delete("/api/personnel/:id", async (req, res) => {
   try {
+    if (req.user.profile === "COORDINADOR") {
+      const target=await query(
+        `SELECT p.name AS profile
+         FROM personnel per JOIN profiles p ON p.id=per.profile_id
+         WHERE per.id=$1`,
+        [req.params.id]
+      );
+      if (target.rows[0] && ["ADMIN","COORDINADOR"].includes(target.rows[0].profile)) {
+        return res.status(403).json({ error:"El Coordinador no puede eliminar usuarios ADMIN o COORDINADOR." });
+      }
+    }
     const result = await query("DELETE FROM personnel WHERE id=$1 RETURNING id", [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: "Personal no encontrado." });
     res.json({ ok: true });

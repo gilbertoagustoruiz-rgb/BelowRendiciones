@@ -958,6 +958,7 @@ function advanceRequestValues(body) {
     String(body.company).trim(),
     body.request_date,
     String(body.applicant_name).trim(),
+    body.applicant_personnel_id ? Number(body.applicant_personnel_id) : null,
     String(body.account_number).trim(),
     String(body.account_type).trim(),
     String(body.account_holder).trim(),
@@ -974,9 +975,15 @@ function advanceRequestValues(body) {
   ];
 }
 
-app.get("/api/advances", async (_req, res) => {
+app.get("/api/advances", async (req, res) => {
   try {
-    const result = await query(advanceRequestSelect + " ORDER BY ar.id DESC");
+    const restricted = ["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile);
+    const result = restricted
+      ? await query(
+          advanceRequestSelect + " WHERE ar.applicant_personnel_id=$1 OR (ar.applicant_personnel_id IS NULL AND UPPER(ar.applicant_name)=UPPER($2)) ORDER BY ar.id DESC",
+          [req.user.id, req.user.full_name]
+        )
+      : await query(advanceRequestSelect + " ORDER BY ar.id DESC");
     res.json({ rows: result.rows });
   } catch (error) {
     dbError(res, error);
@@ -984,21 +991,32 @@ app.get("/api/advances", async (_req, res) => {
 });
 
 app.post("/api/advances", async (req, res) => {
+  if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+    req.body.applicant_name=req.user.full_name;
+    req.body.applicant_personnel_id=String(req.user.id);
+  }
+
   const validation = validateAdvanceRequest(req.body);
   if (validation) return res.status(400).json({ error: validation });
 
   try {
-    const project = await query("SELECT id FROM projects WHERE id=$1", [req.body.project_id]);
+    const project = await query("SELECT id, producer_id, subproducer_id FROM projects WHERE id=$1", [req.body.project_id]);
     if (!project.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const assigned=[project.rows[0].producer_id,project.rows[0].subproducer_id].filter(Boolean).map(Number);
+      if (!assigned.includes(Number(req.user.id))) {
+        return res.status(403).json({ error:"Este proyecto no está asignado a tu usuario." });
+      }
+    }
 
     const result = await query(
       `INSERT INTO advance_requests (
-        company, request_date, applicant_name, account_number, account_type,
+        company, request_date, applicant_name, applicant_personnel_id, account_number, account_type,
         account_holder, bank, cci, beneficiary_document, beneficiary_name,
         amount, project_id, deposit_date, settlement_date, observations,
         expected_document_type
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
       ) RETURNING *`,
       advanceRequestValues(req.body)
     );
@@ -1011,31 +1029,46 @@ app.post("/api/advances", async (req, res) => {
 });
 
 app.put("/api/advances/:id", async (req, res) => {
-  const validation = validateAdvanceRequest(req.body);
-  if (validation) return res.status(400).json({ error: validation });
-
   try {
+    const current=await query("SELECT * FROM advance_requests WHERE id=$1",[req.params.id]);
+    if (!current.rows[0]) return res.status(404).json({ error:"Anticipo no encontrado." });
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const owner=Number(current.rows[0].applicant_personnel_id);
+      if (owner && owner!==Number(req.user.id)) {
+        return res.status(403).json({ error:"No puedes editar este anticipo." });
+      }
+      if (!owner && String(current.rows[0].applicant_name).toUpperCase()!==String(req.user.full_name).toUpperCase()) {
+        return res.status(403).json({ error:"No puedes editar este anticipo." });
+      }
+      req.body.applicant_name=req.user.full_name;
+      req.body.applicant_personnel_id=String(req.user.id);
+    }
+
+    const validation = validateAdvanceRequest(req.body);
+    if (validation) return res.status(400).json({ error: validation });
+
     const values = [...advanceRequestValues(req.body), req.params.id];
     const result = await query(
       `UPDATE advance_requests SET
         company=$1,
         request_date=$2,
         applicant_name=$3,
-        account_number=$4,
-        account_type=$5,
-        account_holder=$6,
-        bank=$7,
-        cci=$8,
-        beneficiary_document=$9,
-        beneficiary_name=$10,
-        amount=$11,
-        project_id=$12,
-        deposit_date=$13,
-        settlement_date=$14,
-        observations=$15,
-        expected_document_type=$16,
+        applicant_personnel_id=$4,
+        account_number=$5,
+        account_type=$6,
+        account_holder=$7,
+        bank=$8,
+        cci=$9,
+        beneficiary_document=$10,
+        beneficiary_name=$11,
+        amount=$12,
+        project_id=$13,
+        deposit_date=$14,
+        settlement_date=$15,
+        observations=$16,
+        expected_document_type=$17,
         updated_at=NOW()
-       WHERE id=$17
+       WHERE id=$18
        RETURNING id`,
       values
     );
@@ -1051,6 +1084,15 @@ app.put("/api/advances/:id", async (req, res) => {
 
 app.delete("/api/advances/:id", async (req, res) => {
   try {
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const current=await query("SELECT applicant_personnel_id, applicant_name FROM advance_requests WHERE id=$1",[req.params.id]);
+      if (!current.rows[0]) return res.status(404).json({ error:"Anticipo no encontrado." });
+      const owner=Number(current.rows[0].applicant_personnel_id);
+      if ((owner && owner!==Number(req.user.id)) ||
+          (!owner && String(current.rows[0].applicant_name).toUpperCase()!==String(req.user.full_name).toUpperCase())) {
+        return res.status(403).json({ error:"No puedes eliminar este anticipo." });
+      }
+    }
     const result = await query("DELETE FROM advance_requests WHERE id=$1 RETURNING id", [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: "Anticipo no encontrado." });
     res.json({ ok: true });

@@ -714,10 +714,11 @@ $("#search").addEventListener("input",render);
 
 $("#loginForm")?.addEventListener("submit",async(event)=>{
   event.preventDefault();
+  const loginForm=event.currentTarget;
   try {
-    const data=Object.fromEntries(new FormData(event.currentTarget).entries());
+    const data=Object.fromEntries(new FormData(loginForm).entries());
     const user=await request(API+"/auth/login",{method:"POST",body:JSON.stringify(data)});
-    event.currentTarget.reset();
+    loginForm.reset();
     showApp(user);
     await loadCurrent();
   } catch(error) {
@@ -727,13 +728,14 @@ $("#loginForm")?.addEventListener("submit",async(event)=>{
 
 $("#bootstrapForm")?.addEventListener("submit",async(event)=>{
   event.preventDefault();
+  const bootstrapForm=event.currentTarget;
   try {
-    const data=Object.fromEntries(new FormData(event.currentTarget).entries());
+    const data=Object.fromEntries(new FormData(bootstrapForm).entries());
     if (data.password !== data.password_confirm) throw new Error("Las contraseñas no coinciden.");
     delete data.password_confirm;
     await request(API+"/auth/bootstrap",{method:"POST",body:JSON.stringify(data)});
     const user=await request(API+"/auth/me");
-    event.currentTarget.reset();
+    bootstrapForm.reset();
     showApp(user);
     await loadCurrent();
   } catch(error) {

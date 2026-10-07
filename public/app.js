@@ -114,67 +114,6 @@ function filteredRows() {
 }
 
 function renderStats() {
-  if (state.module === "advances") {
-    $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVO";
-
-    const today=new Date().toISOString().slice(0,10);
-    $("#formFields").innerHTML=[
-      selectHtml("company","Empresa",[
-        {value:"BELOW SAC",label:"Below SAC"},
-        {value:"BELOW TRADE SAC",label:"Below Trade SAC"}
-      ],row?.company || "BELOW SAC",true),
-      inputField("request_date","Fecha de solicitud","date",row ? String(row.request_date).slice(0,10) : today),
-      inputField("applicant_name","Datos del solicitante","text",row?.applicant_name || ""),
-      inputField("account_number","Número de cuenta","text",row?.account_number || "",'maxlength="40"'),
-      selectHtml("account_type","Tipo de cuenta",[
-        {value:"AHORRO",label:"Ahorro"},
-        {value:"CTE",label:"Cuenta Corriente"}
-      ],row?.account_type || "AHORRO",true),
-      inputField("account_holder","Titular de la cuenta","text",row?.account_holder || ""),
-      inputField("bank","Banco","text",row?.bank || ""),
-      inputField("cci","CCI","text",row?.cci || "",'maxlength="40"'),
-      inputField("beneficiary_document","RUC / DNI","text",row?.beneficiary_document || "",'maxlength="20"'),
-      inputField("beneficiary_name","Razón Social / Nombre (beneficiario)","text",row?.beneficiary_name || ""),
-      inputField("amount","Monto a depositar (S/)","number",row?.amount || "",'min="0.01" step="0.01"'),
-      selectHtml(
-        "project_id",
-        "Proyecto",
-        state.projects.map((p)=>({value:p.id,label:p.project_code+" · "+p.project_name+" · "+p.client_name})),
-        row?.project_id ?? null,
-        true
-      ),
-      '<div class="field"><label>Código de Proyecto</label><input id="advanceProjectCode" type="text" value="'+esc(row?.project_code || "")+'" readonly></div>',
-      '<div class="field"><label>Nombre de Proyecto</label><input id="advanceProjectName" type="text" value="'+esc(row?.project_name || "")+'" readonly></div>',
-      '<div class="field"><label>Cliente</label><input id="advanceClientName" type="text" value="'+esc(row?.client_name || "")+'" readonly></div>',
-      inputField("deposit_date","Fecha de abono","date",row ? String(row.deposit_date).slice(0,10) : ""),
-      inputField("settlement_date","Fecha de rendición","date",row ? String(row.settlement_date).slice(0,10) : ""),
-      '<div class="field full"><label>Motivo u Observaciones</label><textarea name="observations" rows="3" required>'+esc(row?.observations || "")+'</textarea></div>',
-      selectHtml("expected_document_type","Tipo de comprobante a entregar",[
-        {value:"RH",label:"RH - Recibo por Honorarios"},
-        {value:"FACTURA",label:"Factura"},
-        {value:"BOLETA",label:"Boleta"},
-        {value:"OTRO",label:"Otro"}
-      ],row?.expected_document_type || "FACTURA",true)
-    ].join("");
-
-    const syncProject=()=>{
-      const select=form.querySelector('[name="project_id"]');
-      const p=state.projects.find((item)=>String(item.id)===String(select?.value));
-      const code=$("#advanceProjectCode");
-      const name=$("#advanceProjectName");
-      const client=$("#advanceClientName");
-      if(code) code.value=p?.project_code || "";
-      if(name) name.value=p?.project_name || "";
-      if(client) client.value=p?.client_name || "";
-    };
-    form.querySelector('[name="project_id"]').addEventListener("change",syncProject);
-    syncProject();
-
-    showHelp("El anticipo genera su propio formato BL-F-RA-01. Código, nombre de proyecto y cliente se completan automáticamente.");
-    modal.showModal();
-    return;
-  }
-
   if (state.module === "projects") {
     const clients = new Set(state.rows.map((r) => r.client_id)).size;
     const concepts = state.rows.reduce((sum, r) => sum + (r.concepts?.length || 0), 0);
@@ -460,6 +399,67 @@ function openForm(row=null) {
       refreshExpenseConcepts();
     });
     form.querySelector('[name="document"]').addEventListener("change",(event)=>scanExpenseDocument(event.target.files?.[0]));
+    modal.showModal();
+    return;
+  }
+
+  if (state.module === "advances") {
+    $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVO";
+
+    const today=new Date().toISOString().slice(0,10);
+    $("#formFields").innerHTML=[
+      selectHtml("company","Empresa",[
+        {value:"BELOW SAC",label:"Below SAC"},
+        {value:"BELOW TRADE SAC",label:"Below Trade SAC"}
+      ],row?.company || "BELOW SAC",true),
+      inputField("request_date","Fecha de solicitud","date",row ? String(row.request_date).slice(0,10) : today),
+      inputField("applicant_name","Datos del solicitante","text",row?.applicant_name || ""),
+      inputField("account_number","Número de cuenta","text",row?.account_number || "",'maxlength="40"'),
+      selectHtml("account_type","Tipo de cuenta",[
+        {value:"AHORRO",label:"Ahorro"},
+        {value:"CTE",label:"Cuenta Corriente"}
+      ],row?.account_type || "AHORRO",true),
+      inputField("account_holder","Titular de la cuenta","text",row?.account_holder || ""),
+      inputField("bank","Banco","text",row?.bank || ""),
+      inputField("cci","CCI","text",row?.cci || "",'maxlength="40"'),
+      inputField("beneficiary_document","RUC / DNI","text",row?.beneficiary_document || "",'maxlength="20"'),
+      inputField("beneficiary_name","Razón Social / Nombre (beneficiario)","text",row?.beneficiary_name || ""),
+      inputField("amount","Monto a depositar (S/)","number",row?.amount || "",'min="0.01" step="0.01"'),
+      selectHtml(
+        "project_id",
+        "Proyecto",
+        state.projects.map((p)=>({value:p.id,label:p.project_code+" · "+p.project_name+" · "+p.client_name})),
+        row?.project_id ?? null,
+        true
+      ),
+      '<div class="field"><label>Código de Proyecto</label><input id="advanceProjectCode" type="text" value="'+esc(row?.project_code || "")+'" readonly></div>',
+      '<div class="field"><label>Nombre de Proyecto</label><input id="advanceProjectName" type="text" value="'+esc(row?.project_name || "")+'" readonly></div>',
+      '<div class="field"><label>Cliente</label><input id="advanceClientName" type="text" value="'+esc(row?.client_name || "")+'" readonly></div>',
+      inputField("deposit_date","Fecha de abono","date",row ? String(row.deposit_date).slice(0,10) : ""),
+      inputField("settlement_date","Fecha de rendición","date",row ? String(row.settlement_date).slice(0,10) : ""),
+      '<div class="field full"><label>Motivo u Observaciones</label><textarea name="observations" rows="3" required>'+esc(row?.observations || "")+'</textarea></div>',
+      selectHtml("expected_document_type","Tipo de comprobante a entregar",[
+        {value:"RH",label:"RH - Recibo por Honorarios"},
+        {value:"FACTURA",label:"Factura"},
+        {value:"BOLETA",label:"Boleta"},
+        {value:"OTRO",label:"Otro"}
+      ],row?.expected_document_type || "FACTURA",true)
+    ].join("");
+
+    const syncProject=()=>{
+      const select=form.querySelector('[name="project_id"]');
+      const p=state.projects.find((item)=>String(item.id)===String(select?.value));
+      const code=$("#advanceProjectCode");
+      const name=$("#advanceProjectName");
+      const client=$("#advanceClientName");
+      if(code) code.value=p?.project_code || "";
+      if(name) name.value=p?.project_name || "";
+      if(client) client.value=p?.client_name || "";
+    };
+    form.querySelector('[name="project_id"]').addEventListener("change",syncProject);
+    syncProject();
+
+    showHelp("El anticipo genera su propio formato BL-F-RA-01. Código, nombre de proyecto y cliente se completan automáticamente.");
     modal.showModal();
     return;
   }

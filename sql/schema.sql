@@ -183,6 +183,33 @@ CREATE INDEX IF NOT EXISTS idx_advances_concept ON advance_reports(concept_id);
 CREATE INDEX IF NOT EXISTS idx_advances_producer ON advance_reports(producer_id);
 CREATE INDEX IF NOT EXISTS idx_advances_validation ON advance_reports(validation_status);
 
+
+CREATE TABLE IF NOT EXISTS advance_requests (
+  id BIGSERIAL PRIMARY KEY,
+  company VARCHAR(40) NOT NULL CHECK (company IN ('BELOW SAC','BELOW TRADE SAC')),
+  request_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  applicant_name VARCHAR(180) NOT NULL,
+  account_number VARCHAR(40) NOT NULL,
+  account_type VARCHAR(10) NOT NULL CHECK (account_type IN ('AHORRO','CTE')),
+  account_holder VARCHAR(180) NOT NULL,
+  bank VARCHAR(120) NOT NULL,
+  cci VARCHAR(40),
+  beneficiary_document VARCHAR(20) NOT NULL,
+  beneficiary_name VARCHAR(220) NOT NULL,
+  amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  project_id BIGINT NOT NULL REFERENCES projects(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  deposit_date DATE NOT NULL,
+  settlement_date DATE NOT NULL,
+  observations TEXT NOT NULL,
+  expected_document_type VARCHAR(30) NOT NULL CHECK (expected_document_type IN ('RH','FACTURA','BOLETA','OTRO')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_advance_requests_project ON advance_requests(project_id);
+CREATE INDEX IF NOT EXISTS idx_advance_requests_request_date ON advance_requests(request_date);
+CREATE INDEX IF NOT EXISTS idx_advance_requests_deposit_date ON advance_requests(deposit_date);
+
 INSERT INTO event_concepts (name) VALUES
   ('PRODUCCIÓN TÉCNICA'),
   ('ESTRUCTURAS Y MOBILIARIO'),

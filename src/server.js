@@ -517,9 +517,15 @@ LEFT JOIN project_event_concepts pec ON pec.project_id = p.id
 LEFT JOIN event_concepts ec ON ec.id = pec.concept_id
 `;
 
-app.get("/api/projects", async (_req, res) => {
+app.get("/api/projects", async (req, res) => {
   try {
-    const result = await query(projectSelect + " GROUP BY p.id, c.name, c.ruc, pr.full_name, sp.full_name, e.full_name ORDER BY p.id DESC");
+    const restricted = ["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile);
+    const where = restricted ? " WHERE p.producer_id=$1 OR p.subproducer_id=$1 " : " ";
+    const params = restricted ? [req.user.id] : [];
+    const result = await query(
+      projectSelect + where + " GROUP BY p.id, c.name, c.ruc, pr.full_name, sp.full_name, e.full_name ORDER BY p.id DESC",
+      params
+    );
     res.json(result.rows);
   } catch (error) { dbError(res, error); }
 });
@@ -630,9 +636,12 @@ JOIN event_concepts ec ON ec.id=er.concept_id
 JOIN personnel pr ON pr.id=er.producer_id
 `;
 
-app.get("/api/expenses", async (_req, res) => {
+app.get("/api/expenses", async (req, res) => {
   try {
-    const result = await query(expenseSelect + " ORDER BY er.id DESC");
+    const restricted = ["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile);
+    const result = restricted
+      ? await query(expenseSelect + " WHERE er.producer_id=$1 ORDER BY er.id DESC", [req.user.id])
+      : await query(expenseSelect + " ORDER BY er.id DESC");
     res.json({ rows: result.rows, sunatConfigured: isSunatConfigured() });
   } catch (error) { dbError(res, error); }
 });
@@ -641,6 +650,9 @@ app.get("/api/expenses/:id/file", async (req, res) => {
   try {
     const result = await query("SELECT * FROM expense_reports WHERE id=$1", [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: "Archivo no encontrado." });
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile) && Number(result.rows[0].producer_id) !== Number(req.user.id)) {
+      return res.status(403).json({ error: "No tienes permiso para ver este archivo." });
+    }
     await sendEvidence(res, result.rows[0]);
   } catch (error) {
     console.error(error);
@@ -735,12 +747,18 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
 
   try {
     const projectCheck = await query(
-      "SELECT id, producer_id FROM projects WHERE id=$1",
+      "SELECT id, producer_id, subproducer_id FROM projects WHERE id=$1",
       [req.body.project_id]
     );
     if (!projectCheck.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
-    if (Number(projectCheck.rows[0].producer_id) !== Number(req.body.producer_id)) {
-      return res.status(400).json({ error: "El productor seleccionado no corresponde al proyecto." });
+
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const assigned = [projectCheck.rows[0].producer_id, projectCheck.rows[0].subproducer_id]
+        .filter(Boolean).map(Number);
+      if (!assigned.includes(Number(req.user.id))) {
+        return res.status(403).json({ error: "Este proyecto no está asignado a tu usuario." });
+      }
+      req.body.producer_id = String(req.user.id);
     }
 
     const linkCheck = await query(
@@ -780,14 +798,23 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
   try {
     const current = await query("SELECT * FROM expense_reports WHERE id=$1", [req.params.id]);
     if (!current.rows[0]) return res.status(404).json({ error: "Rendición no encontrada." });
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile) && Number(current.rows[0].producer_id) !== Number(req.user.id)) {
+      return res.status(403).json({ error: "No puedes editar esta rendición." });
+    }
 
     const projectCheck = await query(
-      "SELECT id, producer_id FROM projects WHERE id=$1",
+      "SELECT id, producer_id, subproducer_id FROM projects WHERE id=$1",
       [req.body.project_id]
     );
     if (!projectCheck.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
-    if (Number(projectCheck.rows[0].producer_id) !== Number(req.body.producer_id)) {
-      return res.status(400).json({ error: "El productor seleccionado no corresponde al proyecto." });
+
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const assigned = [projectCheck.rows[0].producer_id, projectCheck.rows[0].subproducer_id]
+        .filter(Boolean).map(Number);
+      if (!assigned.includes(Number(req.user.id))) {
+        return res.status(403).json({ error: "Este proyecto no está asignado a tu usuario." });
+      }
+      req.body.producer_id = String(req.user.id);
     }
 
     const linkCheck = await query(
@@ -863,6 +890,12 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
 
 app.post("/api/expenses/:id/validate", async (req, res) => {
   try {
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const own=await query("SELECT producer_id FROM expense_reports WHERE id=$1",[req.params.id]);
+      if (!own.rows[0] || Number(own.rows[0].producer_id)!==Number(req.user.id)) {
+        return res.status(403).json({ error:"No puedes validar esta rendición." });
+      }
+    }
     const result = await runSunatValidation(req.params.id);
     const row = await query(expenseSelect + " WHERE er.id=$1", [req.params.id]);
     if (!row.rows[0]) return res.status(404).json({ error: "Rendición no encontrada." });
@@ -872,6 +905,12 @@ app.post("/api/expenses/:id/validate", async (req, res) => {
 
 app.delete("/api/expenses/:id", async (req, res) => {
   try {
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const own=await query("SELECT producer_id FROM expense_reports WHERE id=$1",[req.params.id]);
+      if (!own.rows[0] || Number(own.rows[0].producer_id)!==Number(req.user.id)) {
+        return res.status(403).json({ error:"No puedes eliminar esta rendición." });
+      }
+    }
     const result = await query("DELETE FROM expense_reports WHERE id=$1 RETURNING id", [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: "Rendición no encontrada." });
     res.json({ ok: true });

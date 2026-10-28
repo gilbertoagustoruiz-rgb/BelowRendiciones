@@ -5,6 +5,7 @@ import "dotenv/config";
 import PDFDocument from "pdfkit";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
+import * as XLSX from "xlsx";
 import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, validateCpe } from "./sunat.js";
@@ -26,12 +27,18 @@ const upload = multer({
   },
 });
 
+const dataUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 },
+});
+
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const catalogs = {
   clients: { table: "clients", fields: ["name", "ruc", "responsible_person"], required: ["name", "ruc", "responsible_person"] },
+  clientprojects: { table: "client_projects_master", fields: ["client_name", "project_name", "project_code"], required: ["client_name", "project_name", "project_code"] },
   profiles: { table: "profiles", fields: ["name"], required: ["name"] },
   concepts: { table: "event_concepts", fields: ["name"], required: ["name"] },
 };
@@ -130,8 +137,8 @@ async function getCurrentUser(req) {
 }
 
 const ROLE_MODULES = {
-  ADMIN: ["projects","expenses","advances","clients","profiles","personnel","concepts"],
-  COORDINADOR: ["projects","expenses","advances","clients","personnel"],
+  ADMIN: ["projects","expenses","advances","clients","clientprojects","profiles","personnel","concepts"],
+  COORDINADOR: ["projects","expenses","advances","clients","clientprojects","personnel"],
   PRODUCTOR: ["expenses","advances"],
   "SUB PRODUCTOR": ["expenses","advances"],
   EJECUTIVO: [],
@@ -276,7 +283,7 @@ function canManageModule(user,module,method) {
   if (user.profile === "ADMIN") return true;
 
   if (user.profile === "COORDINADOR") {
-    if (["expenses","advances","clients","projects","personnel"].includes(module)) return true;
+    if (["expenses","advances","clients","clientprojects","projects","personnel"].includes(module)) return true;
     if (["profiles","concepts"].includes(module)) return method === "GET";
     return false;
   }
@@ -296,6 +303,7 @@ function moduleFromApiPath(path) {
   if (first === "expenses") return "expenses";
   if (first === "advances") return "advances";
   if (first === "clients") return "clients";
+  if (first === "clientprojects") return "clientprojects";
   if (first === "profiles") return "profiles";
   if (first === "personnel") return "personnel";
   if (first === "concepts") return "concepts";
@@ -309,6 +317,74 @@ app.use("/api", requireAuth, (req,res,next)=>{
     return res.status(403).json({ error:"No tienes permiso para realizar esta acción." });
   }
   next();
+});
+
+app.post("/api/clientprojects/import", dataUpload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Debes seleccionar un archivo Excel o CSV." });
+
+  try {
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) return res.status(400).json({ error: "El archivo no contiene hojas." });
+
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
+
+    function normalizeKey(key) {
+      return String(key || "")
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .trim().toUpperCase().replace(/\s+/g, " ");
+    }
+
+    function pick(row, aliases) {
+      const entries = Object.entries(row);
+      for (const [key, value] of entries) {
+        if (aliases.includes(normalizeKey(key))) return String(value ?? "").trim();
+      }
+      return "";
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    for (const row of rows) {
+      const clientName = pick(row, ["CLIENTE"]);
+      const projectName = pick(row, ["NOMBRE DEL PROYECTO","NOMBRE PROYECTO","PROYECTO"]);
+      const projectCode = pick(row, ["CODIGO DEL PROYECTO","CODIGO PROYECTO","CODIGO"]).toUpperCase();
+
+      if (!clientName || !projectName || !projectCode) {
+        skipped++;
+        continue;
+      }
+
+      const existing = await query(
+        "SELECT id FROM client_projects_master WHERE UPPER(project_code)=UPPER($1)",
+        [projectCode]
+      );
+
+      if (existing.rows[0]) {
+        await query(
+          `UPDATE client_projects_master
+           SET client_name=$1, project_name=$2, project_code=$3, updated_at=NOW()
+           WHERE id=$4`,
+          [clientName, projectName, projectCode, existing.rows[0].id]
+        );
+        updated++;
+      } else {
+        await query(
+          `INSERT INTO client_projects_master (client_name, project_name, project_code)
+           VALUES ($1,$2,$3)`,
+          [clientName, projectName, projectCode]
+        );
+        inserted++;
+      }
+    }
+
+    res.json({ ok: true, total: rows.length, inserted, updated, skipped });
+  } catch (error) {
+    console.error("Error importando clientes/proyectos:", error);
+    res.status(400).json({ error: "No se pudo leer el archivo. Verifica que sea Excel o CSV y que tenga las columnas CLIENTE, NOMBRE DEL PROYECTO y CODIGO DEL PROYECTO." });
+  }
 });
 
 app.get("/api/:type", async (req, res, next) => {
@@ -331,7 +407,9 @@ app.post("/api/:type", async (req, res, next) => {
   try {
     const values = config.fields.map((field) => {
       const value = String(req.body[field]).trim();
-      return type === "profiles" && field === "name" ? value.toUpperCase() : value;
+      if (type === "profiles" && field === "name") return value.toUpperCase();
+      if (type === "clientprojects" && field === "project_code") return value.toUpperCase();
+      return value;
     });
     const placeholders = config.fields.map((_, i) => "$" + (i + 1)).join(", ");
     const result = await query(
@@ -353,7 +431,9 @@ app.put("/api/:type/:id", async (req, res, next) => {
   try {
     const values = config.fields.map((field) => {
       const value = String(req.body[field]).trim();
-      return type === "profiles" && field === "name" ? value.toUpperCase() : value;
+      if (type === "profiles" && field === "name") return value.toUpperCase();
+      if (type === "clientprojects" && field === "project_code") return value.toUpperCase();
+      return value;
     });
     const setSql = config.fields.map((field, i) => field + "=$" + (i + 1)).join(", ");
     values.push(req.params.id);

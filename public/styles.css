@@ -252,3 +252,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   cursor: pointer;
   text-align: left;
 }
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}

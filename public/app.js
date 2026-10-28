@@ -162,29 +162,6 @@ function filteredRows() {
 }
 
 function renderStats() {
-  if (state.module === "clients") {
-    const masterNames=[...new Set((state.catalogs.clientprojects || []).map((r)=>String(r.client_name || "").trim()).filter(Boolean))]
-      .sort((a,b)=>a.localeCompare(b,"es"));
-
-    if (row?.name && !masterNames.includes(row.name)) masterNames.unshift(row.name);
-
-    $("#formFields").innerHTML=[
-      selectHtml(
-        "name",
-        "Nombre Cliente",
-        masterNames.map((name)=>({value:name,label:name})),
-        row?.name || "",
-        true
-      ),
-      inputField("ruc","RUC","text",row?.ruc || "",'inputmode="numeric" maxlength="11" pattern="\\d{11}"'),
-      inputField("responsible_person","Persona Responsable","text",row?.responsible_person || "")
-    ].join("");
-
-    showHelp("El Nombre Cliente se toma del maestro Clientes / Proyectos (client_projects_master.client_name).");
-    modal.showModal();
-    return;
-  }
-
   if (state.module === "projects") {
     const clients = new Set(state.rows.map((r) => r.client_id)).size;
     const concepts = state.rows.reduce((sum, r) => sum + (r.concepts?.length || 0), 0);
@@ -602,6 +579,34 @@ function openForm(row=null) {
       ? "La contraseña actual nunca se muestra. Si dejas los campos de nueva contraseña vacíos, se conserva la existente."
       : "La contraseña se almacenará protegida mediante hash y nunca se mostrará en texto plano."
     );
+    modal.showModal();
+    return;
+  }
+
+  if (state.module === "clients") {
+    const masterNames=[...new Set(
+      (state.catalogs.clientprojects || [])
+        .map((r)=>String(r.client_name || "").trim())
+        .filter(Boolean)
+    )].sort((x,y)=>x.localeCompare(y,"es"));
+
+    if (row?.name && !masterNames.includes(row.name)) {
+      masterNames.unshift(row.name);
+    }
+
+    $("#formFields").innerHTML=[
+      selectHtml(
+        "name",
+        "Nombre Cliente",
+        masterNames.map((name)=>({value:name,label:name})),
+        row?.name || "",
+        true
+      ),
+      inputField("ruc","RUC","text",row?.ruc || "",'inputmode="numeric" maxlength="11" pattern="\\d{11}"'),
+      inputField("responsible_person","Persona Responsable","text",row?.responsible_person || "")
+    ].join("");
+
+    showHelp("El Nombre Cliente se toma del maestro Clientes / Proyectos.");
     modal.showModal();
     return;
   }

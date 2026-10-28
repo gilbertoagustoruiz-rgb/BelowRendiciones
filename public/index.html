@@ -70,7 +70,11 @@
         <p class="eyebrow">GESTIÓN DE EVENTOS</p>
         <h1 id="pageTitle">Proyectos</h1>
       </div>
-      <button class="primary" id="newBtn">+ Nuevo registro</button>
+      <div class="topbar-actions">
+        <button class="secondary hidden" id="importClientProjectsBtn" type="button">Importar Excel / CSV</button>
+        <input class="hidden" id="importClientProjectsFile" type="file" accept=".xlsx,.xls,.csv" />
+        <button class="primary" id="newBtn">+ Nuevo registro</button>
+      </div>
     </header>
 
     <section class="stats" id="stats"></section>

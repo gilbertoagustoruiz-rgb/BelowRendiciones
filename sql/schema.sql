@@ -14,6 +14,18 @@ CREATE TABLE IF NOT EXISTS event_concepts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS client_projects_master (
+  id BIGSERIAL PRIMARY KEY,
+  client_name VARCHAR(180) NOT NULL,
+  project_name VARCHAR(250) NOT NULL,
+  project_code VARCHAR(80) NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_projects_master_client
+  ON client_projects_master(client_name);
+
 CREATE TABLE IF NOT EXISTS profiles (
   id BIGSERIAL PRIMARY KEY,
   name VARCHAR(60) NOT NULL UNIQUE,

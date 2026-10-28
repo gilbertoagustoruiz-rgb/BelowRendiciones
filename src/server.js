@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import * as XLSX from "xlsx";
 import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
-import { isSunatConfigured, mapSunatStatus, validateCpe } from "./sunat.js";
+import { isSunatConfigured, mapSunatStatus, testSunatConnection, validateCpe } from "./sunat.js";
 import { saveEvidence, sendEvidence } from "./storage.js";
 import { readReceiptDocument } from "./document-reader.js";
 
@@ -777,6 +777,19 @@ function validateExpenseInput(body) {
   return null;
 }
 
+app.get("/api/sunat/status", async (req, res) => {
+  if (!["ADMIN","COORDINADOR"].includes(req.user.profile)) {
+    return res.status(403).json({ error: "No tienes permiso para revisar la configuración SUNAT." });
+  }
+
+  try {
+    const status = await testSunatConnection();
+    res.status(status.connected ? 200 : 503).json(status);
+  } catch (error) {
+    dbError(res, error);
+  }
+});
+
 async function runSunatValidation(expenseId) {
   const result = await query("SELECT * FROM expense_reports WHERE id=$1", [expenseId]);
   const expense = result.rows[0];
@@ -811,8 +824,12 @@ async function runSunatValidation(expenseId) {
         data?.data?.estadoCp == null ? null : String(data.data.estadoCp),
         data?.data?.estadoRuc == null ? null : String(data.data.estadoRuc),
         data?.data?.condDomiRuc == null ? null : String(data.data.condDomiRuc),
-        data?.message || null,
-        JSON.stringify(data?.data?.Observaciones || []),
+        status === "VALIDADO"
+          ? "Consulta procesada por SUNAT: comprobante ACEPTADO."
+          : status === "NO_EXISTE"
+            ? "Consulta procesada por SUNAT: comprobante NO INFORMADO / NO EXISTE con los datos enviados."
+            : (data?.message || null),
+        JSON.stringify(data?.data?.Observaciones || data?.data?.observaciones || []),
         JSON.stringify(data),
         expenseId,
       ]

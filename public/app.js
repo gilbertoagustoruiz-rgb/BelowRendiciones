@@ -5,6 +5,7 @@ const modules = {
   expenses: { title: "Rendiciones", singular: "Rendición" },
   advances: { title: "Anticipo", singular: "Anticipo" },
   clients: { title: "Clientes", singular: "Cliente" },
+  clientprojects: { title: "Clientes / Proyectos", singular: "Cliente / Proyecto" },
   profiles: { title: "Perfiles", singular: "Perfil" },
   personnel: { title: "Personal", singular: "Personal" },
   concepts: { title: "Conceptos de Eventos", singular: "Concepto" },
@@ -12,6 +13,7 @@ const modules = {
 
 const fields = {
   clients: [["name","Nombre Cliente","text"],["ruc","RUC","text"],["responsible_person","Persona Responsable","text"]],
+  clientprojects: [["client_name","Cliente","text"],["project_name","Nombre del Proyecto","text"],["project_code","Código del Proyecto","text"]],
   profiles: [["name","Nombre del Perfil","text"]],
   concepts: [["name","Nombre del Concepto","text"]],
 };
@@ -78,6 +80,7 @@ function showApp(user) {
     state.module=allowed[0] || "expenses";
   }
   $("#pageTitle").textContent=modules[state.module]?.title || "Below Rendiciones";
+  $("#importClientProjectsBtn")?.classList.toggle("hidden", state.module !== "clientprojects");
   renderNav();
 }
 
@@ -115,6 +118,7 @@ async function changeModule(module) {
   state.editing = null;
   $("#pageTitle").textContent = modules[module].title;
   $("#search").value = "";
+  $("#importClientProjectsBtn")?.classList.toggle("hidden", module !== "clientprojects");
   renderNav();
   await loadCurrent();
 }
@@ -746,6 +750,29 @@ $("#bootstrapForm")?.addEventListener("submit",async(event)=>{
 $("#logoutBtn")?.addEventListener("click",async()=>{
   try { await request(API+"/auth/logout",{method:"POST",body:"{}"}); } catch(_) {}
   showAuth(false);
+});
+
+$("#importClientProjectsBtn")?.addEventListener("click",()=>{
+  $("#importClientProjectsFile")?.click();
+});
+
+$("#importClientProjectsFile")?.addEventListener("change",async(event)=>{
+  const input=event.currentTarget;
+  const file=input.files?.[0];
+  if (!file) return;
+
+  try {
+    const data=new FormData();
+    data.append("file",file);
+    toast("Importando clientes y proyectos...");
+    const result=await request(API+"/clientprojects/import",{method:"POST",body:data});
+    toast("Importación completa: "+result.inserted+" nuevos, "+result.updated+" actualizados, "+result.skipped+" omitidos.");
+    input.value="";
+    await loadCurrent();
+  } catch(error) {
+    input.value="";
+    toast(error.message,true);
+  }
 });
 
 initializeAuth();

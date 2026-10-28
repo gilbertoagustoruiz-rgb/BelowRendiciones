@@ -82,6 +82,34 @@ function formatDateForSunat(value) {
   ].join("/");
 }
 
+export async function testSunatConnection() {
+  if (!isSunatConfigured()) {
+    return {
+      configured: false,
+      connected: false,
+      message: "Faltan SUNAT_CLIENT_ID, SUNAT_CLIENT_SECRET o SUNAT_QUERY_RUC."
+    };
+  }
+
+  try {
+    const token = await getSunatToken();
+    return {
+      configured: true,
+      connected: Boolean(token),
+      queryRuc: process.env.SUNAT_QUERY_RUC?.trim() || null,
+      message: "Token SUNAT obtenido correctamente."
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      connected: false,
+      queryRuc: process.env.SUNAT_QUERY_RUC?.trim() || null,
+      message: error.message,
+      details: error.sunatPayload || null
+    };
+  }
+}
+
 export async function validateCpe(expense) {
   const token = await getSunatToken();
   const queryRuc = process.env.SUNAT_QUERY_RUC.trim();

@@ -124,7 +124,7 @@ async function changeModule(module) {
 }
 
 async function loadCatalogs() {
-  const keys = ["clients","profiles","personnel","concepts"];
+  const keys = ["clients","clientprojects","profiles","personnel","concepts"];
   const data = await Promise.all(keys.map((key) => request(API + "/" + key)));
   state.catalogs = Object.fromEntries(keys.map((key, i) => [key, data[i]]));
 }
@@ -135,7 +135,7 @@ async function loadProjects() {
 
 async function loadCurrent() {
   try {
-    if (["projects","personnel"].includes(state.module)) await loadCatalogs();
+    if (["projects","personnel","clients"].includes(state.module)) await loadCatalogs();
 
     if (state.module === "expenses") {
       await Promise.all([loadCatalogs(), loadProjects()]);
@@ -162,6 +162,29 @@ function filteredRows() {
 }
 
 function renderStats() {
+  if (state.module === "clients") {
+    const masterNames=[...new Set((state.catalogs.clientprojects || []).map((r)=>String(r.client_name || "").trim()).filter(Boolean))]
+      .sort((a,b)=>a.localeCompare(b,"es"));
+
+    if (row?.name && !masterNames.includes(row.name)) masterNames.unshift(row.name);
+
+    $("#formFields").innerHTML=[
+      selectHtml(
+        "name",
+        "Nombre Cliente",
+        masterNames.map((name)=>({value:name,label:name})),
+        row?.name || "",
+        true
+      ),
+      inputField("ruc","RUC","text",row?.ruc || "",'inputmode="numeric" maxlength="11" pattern="\\d{11}"'),
+      inputField("responsible_person","Persona Responsable","text",row?.responsible_person || "")
+    ].join("");
+
+    showHelp("El Nombre Cliente se toma del maestro Clientes / Proyectos (client_projects_master.client_name).");
+    modal.showModal();
+    return;
+  }
+
   if (state.module === "projects") {
     const clients = new Set(state.rows.map((r) => r.client_id)).size;
     const concepts = state.rows.reduce((sum, r) => sum + (r.concepts?.length || 0), 0);

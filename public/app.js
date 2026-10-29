@@ -13,7 +13,7 @@ const modules = {
 
 const fields = {
   clients: [["name","Nombre Cliente","text"],["ruc","RUC","text"],["responsible_person","Persona Responsable","text"]],
-  clientprojects: [["client_name","Cliente","text"],["project_name","Nombre del Proyecto","text"],["project_code","Código del Proyecto","text"]],
+  clientprojects: [["ruc","RUC","text"],["client_name","Cliente","text"],["project_name","Nombre del Proyecto","text"],["project_code","Código del Proyecto","text"]],
   profiles: [["name","Nombre del Perfil","text"]],
   concepts: [["name","Nombre del Concepto","text"]],
 };
@@ -639,6 +639,16 @@ function openForm(row=null) {
     ].join("");
   } else {
     $("#formFields").innerHTML=fields[state.module].map(([key,label,type])=>inputField(key,label,type,row?.[key]||"")).join("");
+  }
+  if (state.module === "clientprojects") {
+    const rucInput=form.querySelector('[name="ruc"]');
+    const nameInput=form.querySelector('[name="client_name"]');
+    rucInput?.setAttribute("maxlength","11");
+    rucInput?.setAttribute("pattern","\\d{11}");
+    rucInput?.addEventListener("input",()=>{
+      const found=(state.catalogs.clients||[]).find(c=>c.ruc===rucInput.value);
+      if(found && nameInput) nameInput.value=found.name;
+    });
   }
   if (state.module === "projects") {
     const currencySelect = form.querySelector('[name="currency"]');

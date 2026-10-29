@@ -83,6 +83,7 @@ function showApp(user) {
   }
   $("#pageTitle").textContent=modules[state.module]?.title || "Below Rendiciones";
   $("#importClientProjectsBtn")?.classList.toggle("hidden", state.module !== "clientprojects");
+  $("#importClientsBtn")?.classList.toggle("hidden", state.module !== "clients");
   renderNav();
 }
 
@@ -790,6 +791,20 @@ $("#bootstrapForm")?.addEventListener("submit",async(event)=>{
 $("#logoutBtn")?.addEventListener("click",async()=>{
   try { await request(API+"/auth/logout",{method:"POST",body:"{}"}); } catch(_) {}
   showAuth(false);
+});
+
+$("#importClientsBtn")?.addEventListener("click",()=>$("#importClientsFile")?.click());
+$("#importClientsFile")?.addEventListener("change",async(event)=>{
+  const input=event.currentTarget,file=input.files?.[0];
+  if(!file)return;
+  try{
+    const data=new FormData();
+    data.append("file",file);
+    const result=await request(API+"/clients/import",{method:"POST",body:data});
+    toast("Clientes: "+result.inserted+" nuevos, "+result.updated+" actualizados, "+result.skipped+" omitidos.");
+    if(result.errors?.length) console.warn("Errores de importación:",result.errors);
+    await loadCurrent();
+  }catch(error){toast(error.message,true);}finally{input.value="";}
 });
 
 $("#importClientProjectsBtn")?.addEventListener("click",()=>{

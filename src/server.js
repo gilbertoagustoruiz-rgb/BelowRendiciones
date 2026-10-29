@@ -708,6 +708,23 @@ function projectValues(body) {
   ];
 }
 
+async function syncProjectToMaster(db, project) {
+  const clientResult = await db.query("SELECT ruc,name FROM clients WHERE id=$1", [project.client_id]);
+  const customer = clientResult.rows[0];
+  if (!customer || !/^\d{11}$/.test(String(customer.ruc || ""))) {
+    throw new Error("El cliente debe tener un RUC válido para sincronizar el proyecto.");
+  }
+  const code = String(project.project_code).trim().toUpperCase();
+  await db.query(
+    `INSERT INTO client_projects_master(ruc,client_name,project_name,project_code)
+     VALUES($1,$2,$3,$4)
+     ON CONFLICT(project_code) DO UPDATE SET
+       ruc=EXCLUDED.ruc,client_name=EXCLUDED.client_name,
+       project_name=EXCLUDED.project_name,updated_at=NOW()`,
+    [customer.ruc,customer.name,project.project_name,code]
+  );
+}
+
 app.post("/api/projects", async (req, res) => {
   const validation = validateProject(req.body);
   if (validation) return res.status(400).json({ error: validation });
@@ -722,6 +739,7 @@ app.post("/api/projects", async (req, res) => {
       projectValues(req.body)
     );
     await replaceConcepts(client, result.rows[0].id, req.body.concept_ids);
+    await syncProjectToMaster(client, result.rows[0]);
     await client.query("UPDATE clients SET responsible_person=$1 WHERE id=$2", [String(req.body.contact_name).trim(),req.body.client_id]);
     await client.query("COMMIT");
     res.status(201).json(result.rows[0]);
@@ -749,6 +767,7 @@ app.put("/api/projects/:id", async (req, res) => {
       return res.status(404).json({ error: "Proyecto no encontrado." });
     }
     await replaceConcepts(client, req.params.id, req.body.concept_ids);
+    await syncProjectToMaster(client, result.rows[0]);
     await client.query("UPDATE clients SET responsible_person=$1 WHERE id=$2", [String(req.body.contact_name).trim(),req.body.client_id]);
     await client.query("COMMIT");
     res.json(result.rows[0]);

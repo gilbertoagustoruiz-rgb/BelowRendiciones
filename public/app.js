@@ -806,7 +806,8 @@ $("#importClientProjectsFile")?.addEventListener("change",async(event)=>{
     data.append("file",file);
     toast("Importando clientes y proyectos...");
     const result=await request(API+"/clientprojects/import",{method:"POST",body:data});
-    toast("Importación completa: "+result.inserted+" nuevos, "+result.updated+" actualizados, "+result.skipped+" omitidos.");
+    toast("Importación completa: "+result.inserted+" nuevos, "+result.updated+" actualizados, "+result.skipped+" omitidos. "+(result.errors?.length ? "Revisa la consola para detalles." : ""));
+    if(result.errors?.length) console.warn("Filas omitidas / códigos repetidos:",result.errors);
     input.value="";
     await loadCurrent();
   } catch(error) {

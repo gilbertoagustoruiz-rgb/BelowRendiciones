@@ -38,7 +38,7 @@ app.use(express.static("public"));
 
 const catalogs = {
   clients: { table: "clients", fields: ["name", "ruc", "responsible_person"], required: ["name", "ruc", "responsible_person"] },
-  clientprojects: { table: "client_projects_master", fields: ["client_name", "project_name", "project_code"], required: ["client_name", "project_name", "project_code"] },
+  clientprojects: { table: "client_projects_master", fields: ["ruc", "client_name", "project_name", "project_code"], required: ["ruc", "client_name", "project_name", "project_code"] },
   profiles: { table: "profiles", fields: ["name"], required: ["name"] },
   concepts: { table: "event_concepts", fields: ["name"], required: ["name"] },
 };
@@ -53,7 +53,7 @@ function requiredError(body, fields) {
 }
 
 function identityError(type, body) {
-  if (type === "clients" && body.ruc && !/^\d{11}$/.test(String(body.ruc).trim())) {
+  if (["clients","clientprojects"].includes(type) && body.ruc && !/^\d{11}$/.test(String(body.ruc).trim())) {
     return "El RUC debe contener exactamente 11 dígitos.";
   }
   return null;
@@ -319,72 +319,53 @@ app.use("/api", requireAuth, (req,res,next)=>{
   next();
 });
 
-app.post("/api/clientprojects/import", dataUpload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Debes seleccionar un archivo Excel o CSV." });
-
+app.post("/api/clientprojects/import", dataUpload.single("file"), async (req,res) => {
+  if (!req.file) return res.status(400).json({error:"Selecciona un archivo Excel o CSV."});
   try {
-    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName) return res.status(400).json({ error: "El archivo no contiene hojas." });
-
-    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
-
-    function normalizeKey(key) {
-      return String(key || "")
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-        .trim().toUpperCase().replace(/\s+/g, " ");
+    const workbook=XLSX.read(req.file.buffer,{type:"buffer"});
+    const sheet=workbook.Sheets[workbook.SheetNames[0]];
+    if (!sheet) return res.status(400).json({error:"El archivo no contiene hojas."});
+    const rows=XLSX.utils.sheet_to_json(sheet,{defval:"",raw:false});
+    const normalize=s=>String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim().toUpperCase().replace(/\s+/g," ");
+    const pick=(row,aliases)=>Object.entries(row).find(([key])=>aliases.includes(normalize(key)))?.[1]?.toString().trim()||"";
+    const records=rows.map((row,index)=>({
+      line:index+2,
+      ruc:pick(row,["RUC"]),
+      client_name:pick(row,["CLIENTE"]),
+      project_name:pick(row,["NOMBRE DEL PROYECTO","NOMBRE PROYECTO","PROYECTO"]),
+      project_code:pick(row,["CODIGO DEL PROYECTO","CODIGO PROYECTO","CODIGO"]).toUpperCase()
+    }));
+    const errors=[];
+    const seen=new Set();
+    for(const record of records) {
+      if(!/^\d{11}$/.test(record.ruc)||!record.client_name||!record.project_name||!record.project_code)
+        errors.push("Fila "+record.line+": RUC de 11 dígitos y los otros tres campos son obligatorios.");
+      if(seen.has(record.project_code)) errors.push("Fila "+record.line+": código duplicado dentro del Excel.");
+      seen.add(record.project_code);
     }
-
-    function pick(row, aliases) {
-      const entries = Object.entries(row);
-      for (const [key, value] of entries) {
-        if (aliases.includes(normalizeKey(key))) return String(value ?? "").trim();
-      }
-      return "";
-    }
-
-    let inserted = 0;
-    let updated = 0;
-    let skipped = 0;
-
-    for (const row of rows) {
-      const clientName = pick(row, ["CLIENTE"]);
-      const projectName = pick(row, ["NOMBRE DEL PROYECTO","NOMBRE PROYECTO","PROYECTO"]);
-      const projectCode = pick(row, ["CODIGO DEL PROYECTO","CODIGO PROYECTO","CODIGO"]).toUpperCase();
-
-      if (!clientName || !projectName || !projectCode) {
-        skipped++;
-        continue;
-      }
-
-      const existing = await query(
-        "SELECT id FROM client_projects_master WHERE UPPER(project_code)=UPPER($1)",
-        [projectCode]
-      );
-
-      if (existing.rows[0]) {
-        await query(
-          `UPDATE client_projects_master
-           SET client_name=$1, project_name=$2, project_code=$3, updated_at=NOW()
-           WHERE id=$4`,
-          [clientName, projectName, projectCode, existing.rows[0].id]
+    if(errors.length) return res.status(400).json({error:"No se importó ningún registro. "+errors.slice(0,10).join(" ")});
+    let inserted=0,updated=0;
+    // Evita cambios parciales si falla una fila.
+    const client=await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for(const record of records) {
+        const existingClient=await client.query("SELECT name FROM clients WHERE ruc=$1",[record.ruc]);
+        if(existingClient.rows[0]) record.client_name=existingClient.rows[0].name;
+        const result=await client.query(
+          `INSERT INTO client_projects_master(ruc,client_name,project_name,project_code)
+           VALUES($1,$2,$3,$4)
+           ON CONFLICT(project_code) DO UPDATE SET ruc=EXCLUDED.ruc,client_name=EXCLUDED.client_name,project_name=EXCLUDED.project_name,updated_at=NOW()
+           RETURNING (xmax=0) AS inserted`,
+          [record.ruc,record.client_name,record.project_name,record.project_code]
         );
-        updated++;
-      } else {
-        await query(
-          `INSERT INTO client_projects_master (client_name, project_name, project_code)
-           VALUES ($1,$2,$3)`,
-          [clientName, projectName, projectCode]
-        );
-        inserted++;
+        if(result.rows[0].inserted) inserted++; else updated++;
       }
-    }
-
-    res.json({ ok: true, total: rows.length, inserted, updated, skipped });
-  } catch (error) {
-    console.error("Error importando clientes/proyectos:", error);
-    res.status(400).json({ error: "No se pudo leer el archivo. Verifica que sea Excel o CSV y que tenga las columnas CLIENTE, NOMBRE DEL PROYECTO y CODIGO DEL PROYECTO." });
-  }
+      await client.query("COMMIT");
+    } catch(error) { await client.query("ROLLBACK");throw error; }
+    finally { client.release(); }
+    res.json({ok:true,total:records.length,inserted,updated,skipped:0});
+  } catch(error) { console.error(error);res.status(400).json({error:"Error al importar. Verifica columnas RUC, CLIENTE, NOMBRE DEL PROYECTO y CODIGO DEL PROYECTO."}); }
 });
 
 app.get("/api/:type", async (req, res, next) => {

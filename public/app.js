@@ -135,7 +135,7 @@ async function loadProjects() {
 
 async function loadCurrent() {
   try {
-    if (["projects","personnel","clients"].includes(state.module)) await loadCatalogs();
+    if (["projects","personnel","clients","clientprojects"].includes(state.module)) await loadCatalogs();
 
     if (state.module === "expenses") {
       await Promise.all([loadCatalogs(), loadProjects()]);

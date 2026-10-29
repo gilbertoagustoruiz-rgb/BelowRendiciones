@@ -51,7 +51,9 @@ function toast(message, isError = false) {
 async function request(url, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-  const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
+  let response;
+  try { response = await fetch(url, { ...options, headers, credentials: "same-origin" }); }
+  catch (_) { throw new Error("No se pudo conectar con el servidor. Comprueba que DigitalOcean esté disponible y vuelve a intentar."); }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && !url.includes("/auth/")) showAuth();
@@ -125,7 +127,7 @@ async function changeModule(module) {
 
 async function loadCatalogs() {
   const keys = ["clients","clientprojects","profiles","personnel","concepts"];
-  const data = await Promise.all(keys.map((key) => request(API + "/" + key)));
+  const data = await Promise.all(keys.map((key) => request(API + "/" + key).catch((error) => { console.warn("Catálogo no disponible:",key,error); return []; })));
   state.catalogs = Object.fromEntries(keys.map((key, i) => [key, data[i]]));
 }
 
@@ -304,7 +306,7 @@ function render() {
     const defs = fields[state.module];
     thead.innerHTML = `<tr>${defs.map(([,label]) => "<th>"+label+"</th>").join("")}<th>Acciones</th></tr>`;
     tbody.innerHTML = rows.length ? rows.map((r) => `<tr>
-      ${defs.map(([key]) => "<td>"+esc(r[key])+"</td>").join("")}
+      ${defs.map(([key]) => "<td>"+esc(r[key] ?? "")+"</td>").join("")}
       <td class="actions">
         <button class="action-btn" data-edit="${r.id}">Editar</button>
         <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>

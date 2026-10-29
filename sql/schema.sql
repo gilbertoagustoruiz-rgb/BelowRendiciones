@@ -17,11 +17,16 @@ CREATE TABLE IF NOT EXISTS event_concepts (
 CREATE TABLE IF NOT EXISTS client_projects_master (
   id BIGSERIAL PRIMARY KEY,
   client_name VARCHAR(180) NOT NULL,
+  ruc VARCHAR(11),
   project_name VARCHAR(250) NOT NULL,
   project_code VARCHAR(80) NOT NULL UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE client_projects_master ADD COLUMN IF NOT EXISTS ruc VARCHAR(11);
+UPDATE client_projects_master cp SET ruc=c.ruc FROM clients c WHERE cp.ruc IS NULL AND LOWER(TRIM(cp.client_name))=LOWER(TRIM(c.name));
+CREATE INDEX IF NOT EXISTS idx_client_projects_master_ruc ON client_projects_master(ruc);
 
 CREATE INDEX IF NOT EXISTS idx_client_projects_master_client
   ON client_projects_master(client_name);

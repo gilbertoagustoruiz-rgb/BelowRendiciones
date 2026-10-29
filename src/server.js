@@ -329,6 +329,44 @@ async function syncClientsFromMaster(db) {
     WHERE clients.name IS DISTINCT FROM EXCLUDED.name`);
 }
 
+app.post("/api/clients/import", dataUpload.single("file"), async (req,res) => {
+  if (!req.file) return res.status(400).json({error:"Selecciona un Excel o CSV."});
+  try {
+    const workbook=XLSX.read(req.file.buffer,{type:"buffer"});
+    const sheet=workbook.Sheets[workbook.SheetNames[0]];
+    if(!sheet) return res.status(400).json({error:"El archivo no tiene hojas."});
+    const rows=XLSX.utils.sheet_to_json(sheet,{defval:"",raw:false});
+    const normalize=value=>String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim().toUpperCase().replace(/\s+/g," ");
+    const pick=(row,aliases)=>Object.entries(row).find(([key])=>aliases.includes(normalize(key)))?.[1]?.toString().trim()||"";
+    const valid=new Map(),errors=[];
+    rows.forEach((row,i)=>{
+      const ruc=pick(row,["RUC"]);
+      const name=pick(row,["NOMBRE CLIENTE","NOMBRE DE CLIENTE","CLIENTE","RAZON SOCIAL"]);
+      const responsible=pick(row,["PERSONA RESPONSABLE","RESPONSABLE","PERSONA DE CONTACTO","CONTACTO"]);
+      if(!/^\d{11}$/.test(ruc)||!name) {errors.push("Fila "+(i+2)+": RUC inválido o cliente vacío.");return;}
+      if(valid.has(ruc)) errors.push("Fila "+(i+2)+": RUC repetido, se usa la última fila válida.");
+      valid.set(ruc,{ruc,name,responsible});
+    });
+    const db=await pool.connect();
+    let inserted=0,updated=0;
+    try {
+      await db.query("BEGIN");
+      for(const record of valid.values()){
+        const existing=await db.query("SELECT id FROM clients WHERE ruc=$1 FOR UPDATE",[record.ruc]);
+        if(existing.rows.length){
+          await db.query("UPDATE clients SET name=$1,responsible_person=CASE WHEN $2<>'' THEN $2 ELSE responsible_person END WHERE id=$3",[record.name,record.responsible,existing.rows[0].id]);
+          updated++;
+        }else{
+          await db.query("INSERT INTO clients(name,ruc,responsible_person) VALUES($1,$2,$3)",[record.name,record.ruc,record.responsible]);
+          inserted++;
+        }
+      }
+      await db.query("COMMIT");
+    }catch(error){await db.query("ROLLBACK");throw error;}finally{db.release();}
+    res.json({ok:true,total:rows.length,inserted,updated,skipped:rows.length-valid.size,errors:errors.slice(0,100)});
+  }catch(error){console.error(error);res.status(400).json({error:"No se pudo importar el archivo. Revisa el formato y los datos."});}
+});
+
 app.post("/api/clientprojects/import", dataUpload.single("file"), async (req,res) => {
   if (!req.file) return res.status(400).json({error:"Selecciona un archivo Excel o CSV."});
   try {

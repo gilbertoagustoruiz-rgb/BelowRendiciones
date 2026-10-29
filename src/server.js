@@ -336,33 +336,41 @@ app.post("/api/clientprojects/import", dataUpload.single("file"), async (req,res
       project_code:pick(row,["CODIGO DEL PROYECTO","CODIGO PROYECTO","CODIGO"]).toUpperCase()
     }));
     const errors=[];
-    const seen=new Set();
+    const valid=new Map();
     for(const record of records) {
-      if(!/^\d{11}$/.test(record.ruc)||!record.client_name||!record.project_name||!record.project_code)
-        errors.push("Fila "+record.line+": RUC de 11 dígitos y los otros tres campos son obligatorios.");
-      if(seen.has(record.project_code)) errors.push("Fila "+record.line+": código duplicado dentro del Excel.");
-      seen.add(record.project_code);
+      if(!record.project_code || !record.client_name || !record.project_name || !/^\d{11}$/.test(record.ruc)) {
+        errors.push("Fila "+record.line+": RUC inválido o campos obligatorios incompletos.");
+        continue;
+      }
+      if(valid.has(record.project_code)) {
+        errors.push("Fila "+record.line+": código repetido; se utilizará la última fila válida para "+record.project_code+".");
+      }
+      valid.set(record.project_code,record);
     }
-    if(errors.length) return res.status(400).json({error:"No se importó ningún registro. "+errors.slice(0,10).join(" ")});
     let inserted=0,updated=0;
-    // Evita cambios parciales si falla una fila.
     const client=await pool.connect();
     try {
       await client.query("BEGIN");
-      for(const record of records) {
-        const result=await client.query(
-          `INSERT INTO client_projects_master(ruc,client_name,project_name,project_code)
-           VALUES($1,$2,$3,$4)
-           ON CONFLICT(project_code) DO UPDATE SET ruc=EXCLUDED.ruc,client_name=EXCLUDED.client_name,project_name=EXCLUDED.project_name,updated_at=NOW()
-           RETURNING (xmax=0) AS inserted`,
-          [record.ruc,record.client_name,record.project_name,record.project_code]
-        );
-        if(result.rows[0].inserted) inserted++; else updated++;
+      for(const record of valid.values()) {
+        const existing=await client.query("SELECT id FROM client_projects_master WHERE UPPER(project_code)=UPPER($1) FOR UPDATE",[record.project_code]);
+        if(existing.rows[0]) {
+          await client.query(
+            "UPDATE client_projects_master SET ruc=$1,client_name=$2,project_name=$3,updated_at=NOW() WHERE id=$4",
+            [record.ruc,record.client_name,record.project_name,existing.rows[0].id]
+          );
+          updated++;
+        } else {
+          await client.query(
+            "INSERT INTO client_projects_master(ruc,client_name,project_name,project_code) VALUES($1,$2,$3,$4)",
+            [record.ruc,record.client_name,record.project_name,record.project_code]
+          );
+          inserted++;
+        }
       }
       await client.query("COMMIT");
     } catch(error) { await client.query("ROLLBACK");throw error; }
     finally { client.release(); }
-    res.json({ok:true,total:records.length,inserted,updated,skipped:0});
+    res.json({ok:true,total:records.length,inserted,updated,skipped:records.length-valid.size,errors:errors.slice(0,100)});
   } catch(error) { console.error(error);res.status(400).json({error:"Error al importar. Verifica columnas RUC, CLIENTE, NOMBRE DEL PROYECTO y CODIGO DEL PROYECTO."}); }
 });
 

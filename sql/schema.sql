@@ -32,7 +32,12 @@ CREATE INDEX IF NOT EXISTS idx_client_projects_master_ruc ON client_projects_mas
 INSERT INTO clients(name,ruc,responsible_person)
 SELECT DISTINCT ON (TRIM(cp.ruc)) TRIM(cp.client_name), TRIM(cp.ruc), ''
 FROM client_projects_master cp
-WHERE cp.ruc ~ '^[0-9]{11}
+WHERE cp.ruc ~ '^[0-9]{11}$' AND TRIM(cp.client_name)<>''
+ORDER BY TRIM(cp.ruc), cp.updated_at DESC NULLS LAST, cp.id DESC
+ON CONFLICT (ruc) DO UPDATE SET name=EXCLUDED.name
+WHERE clients.name IS DISTINCT FROM EXCLUDED.name;
+
+CREATE INDEX IF NOT EXISTS idx_client_projects_master_client
   ON client_projects_master(client_name);
 
 CREATE TABLE IF NOT EXISTS profiles (

@@ -350,8 +350,6 @@ app.post("/api/clientprojects/import", dataUpload.single("file"), async (req,res
     try {
       await client.query("BEGIN");
       for(const record of records) {
-        const existingClient=await client.query("SELECT name FROM clients WHERE ruc=$1",[record.ruc]);
-        if(existingClient.rows[0]) record.client_name=existingClient.rows[0].name;
         const result=await client.query(
           `INSERT INTO client_projects_master(ruc,client_name,project_name,project_code)
            VALUES($1,$2,$3,$4)

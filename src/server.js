@@ -407,6 +407,7 @@ app.post("/api/:type", async (req, res, next) => {
       "INSERT INTO " + config.table + " (" + config.fields.join(", ") + ") VALUES (" + placeholders + ") RETURNING *",
       values
     );
+    if (type === "clientprojects") await syncClientsFromMaster(pool);
     res.status(201).json(result.rows[0]);
   } catch (error) { dbError(res, error); }
 });
@@ -433,6 +434,7 @@ app.put("/api/:type/:id", async (req, res, next) => {
       values
     );
     if (!result.rows[0]) return res.status(404).json({ error: "Registro no encontrado." });
+    if (type === "clientprojects") await syncClientsFromMaster(pool);
     res.json(result.rows[0]);
   } catch (error) { dbError(res, error); }
 });

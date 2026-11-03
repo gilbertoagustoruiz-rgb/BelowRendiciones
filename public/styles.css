@@ -275,3 +275,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .status.enviado,.status.desembolsado { background:#e1ecff; color:#174d97; }
 #workflowFilter { max-width:220px; }
 @media(max-width:600px) { .card-head { flex-wrap:wrap; } .workflow-content { padding:14px; } }
+#financeModal { width:min(1200px,96vw); max-height:92vh; overflow:auto; }
+.finance-actions { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+#financeModal .workflow-summary { grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); }
+#financeModal input[type=number] { min-width:130px; max-width:180px; }
+.budget-reason { display:flex; flex-direction:column; gap:8px; margin:16px 0; }
+.finance-exceeded { background:#fff0e9; }
+#financeAlerts { padding:12px; background:#fff6df; border-radius:8px; }
+#budgetError,#movementEvidenceError { color:#ae2525; }
+#movementEvidenceForm { border-top:1px solid var(--line); margin-top:20px; padding-top:12px; }
+#movementEvidenceForm label { display:flex; flex-direction:column; gap:8px; }
+#movementEvidenceForm .full { grid-column:1 / -1; }

@@ -128,11 +128,40 @@
         <label>Acción<select name="action" required></select></label>
         <label id="workflowExpenseLabel">Rendición<select name="expense_id"></select></label>
         <label id="workflowAmountLabel">Importe (S/)<input name="amount" type="number" min="0.01" max="9999999999.99" step="0.01"></label>
+        <label id="workflowDocumentLabel" class="full">Constancia bancaria (PDF o imagen, máximo 10 MB)<input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp"></label>
         <label class="full">Observación / referencia<textarea name="comment" maxlength="2000" rows="3"></textarea></label>
         <button type="submit" class="primary">Registrar acción</button>
         <p id="workflowError" class="full" role="alert"></p>
       </form>
+      <form id="movementEvidenceForm" class="form-grid hidden">
+        <h3 class="full">Adjuntar constancia a un movimiento registrado</h3>
+        <label>Movimiento<select name="movement_id" required></select></label>
+        <label>Constancia PDF o imagen (máximo 10 MB)<input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required></label>
+        <label class="full">Motivo / referencia<input name="comment" maxlength="2000" required></label>
+        <button type="submit" class="secondary">Adjuntar constancia</button><p class="full" id="movementEvidenceError" role="alert"></p>
+      </form>
       <h3>Historial</h3><div id="workflowHistory"></div>
+    </div>
+  </dialog>
+  <dialog id="financeModal" aria-labelledby="financeTitle">
+    <div class="workflow-content">
+      <div class="modal-head"><h2 id="financeTitle"></h2><button class="icon-btn" id="closeFinance" aria-label="Cerrar presupuesto">×</button></div>
+      <p id="financeProject"></p>
+      <div class="finance-actions"><a class="action-btn" id="financePdf">Descargar liquidación PDF</a><a class="action-btn" id="financeExcel">Descargar liquidación Excel</a><button id="reloadFinance" type="button" class="secondary">Recargar proyecto</button></div>
+      <div id="financeSummary" class="workflow-summary"></div>
+      <p id="financeAlerts" role="status"></p>
+      <p>Importes en soles. El saldo neto no liquida saldos individuales. Las rendiciones aprobadas sin vincular se muestran por separado.</p>
+      <form id="budgetForm">
+        <h3>Presupuesto por concepto (PEN)</h3>
+        <p>Vacío significa sin presupuesto definido; cero autoriza S/ 0.00. El gasto excedido genera una alerta. No se realiza conversión automática de dólares.</p>
+        <div class="table-wrap"><table><thead><tr><th>Concepto</th><th>Presupuesto PEN</th><th>Aprobado PEN</th><th>Por aprobar PEN</th><th>Disponible PEN</th><th>Alerta</th></tr></thead><tbody id="budgetRows"></tbody></table></div>
+        <label class="budget-reason">Motivo del presupuesto o cambio<textarea id="budgetReason" maxlength="2000" rows="2" required></textarea></label>
+        <button type="submit" class="primary">Guardar presupuesto</button><p id="budgetError" role="alert"></p>
+      </form>
+      <h3>Anticipos y saldos</h3><div class="table-wrap"><table><thead><tr><th>Solicitante</th><th>Estado</th><th>Desembolsado</th><th>Rendido</th><th>Devuelto</th><th>Reembolsado</th><th>Saldo</th></tr></thead><tbody id="financeAdvances"></tbody></table></div>
+      <h3>Rendiciones</h3><div class="table-wrap"><table><thead><tr><th>Comprobante</th><th>Productor</th><th>Concepto</th><th>Importe</th><th>Estado</th><th>Anticipo</th><th>Archivo</th></tr></thead><tbody id="financeExpenses"></tbody></table></div>
+      <h3>Movimientos y constancias</h3><div class="table-wrap"><table><thead><tr><th>Movimiento</th><th>Tipo</th><th>Importe</th><th>Referencia</th><th>Constancias</th></tr></thead><tbody id="financeMovements"></tbody></table></div>
+      <h3>Historial del presupuesto</h3><div id="budgetHistory"></div>
     </div>
   </dialog>
   <script type="module" src="/app.js"></script>

@@ -12,6 +12,7 @@ import { isSunatConfigured, mapSunatStatus, testSunatConnection, validateCpe } f
 import { saveEvidence, sendEvidence } from "./storage.js";
 import { readReceiptDocument } from "./document-reader.js";
 import { createWorkflowRouter } from './workflow.js';
+import { createFinanceRouter } from './finance.js';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -138,8 +139,8 @@ async function getCurrentUser(req) {
 }
 
 const ROLE_MODULES = {
-  ADMIN: ["dashboard","projects","expenses","advances","clients","clientprojects","profiles","personnel","concepts"],
-  COORDINADOR: ["dashboard","projects","expenses","advances","clients","clientprojects","personnel"],
+  ADMIN: ["dashboard","finance","projects","expenses","advances","clients","clientprojects","profiles","personnel","concepts"],
+  COORDINADOR: ["dashboard","finance","projects","expenses","advances","clients","clientprojects","personnel"],
   PRODUCTOR: ["dashboard","expenses","advances"],
   "SUB PRODUCTOR": ["dashboard","expenses","advances"],
   EJECUTIVO: [],
@@ -321,6 +322,7 @@ app.use("/api", requireAuth, (req,res,next)=>{
 });
 
 app.use('/api/workflow', createWorkflowRouter(pool));
+app.use('/api/finance', createFinanceRouter(pool));
 
 // Reject edits before accepting an uploaded replacement. Database triggers provide
 // the final protection if a concurrent review changes the state afterwards.
@@ -705,10 +707,10 @@ function validateProject(body) {
 }
 
 async function replaceConcepts(client, projectId, conceptIds = []) {
-  await client.query("DELETE FROM project_event_concepts WHERE project_id=$1", [projectId]);
   const ids = [...new Set((conceptIds || []).map(Number).filter((x) => Number.isInteger(x) && x > 0))];
+  await client.query('DELETE FROM project_event_concepts WHERE project_id=$1 AND NOT (concept_id=ANY($2::bigint[]))',[projectId,ids]);
   for (const id of ids) {
-    await client.query("INSERT INTO project_event_concepts (project_id, concept_id) VALUES ($1,$2)", [projectId, id]);
+    await client.query("INSERT INTO project_event_concepts (project_id, concept_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [projectId, id]);
   }
 }
 

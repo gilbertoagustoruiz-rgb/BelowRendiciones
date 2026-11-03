@@ -1,7 +1,9 @@
+import { initializeFinance, openFinanceProject } from './finance.js';
 const API = "/api";
 
 const modules = {
   dashboard: { title: "Pendientes y conciliación", singular: "Pendiente" },
+  finance: { title: "Presupuesto y liquidación", singular: "Proyecto" },
   projects: { title: "Proyectos", singular: "Proyecto" },
   expenses: { title: "Rendiciones", singular: "Rendición" },
   advances: { title: "Anticipo", singular: "Anticipo" },
@@ -139,7 +141,7 @@ async function loadProjects() {
 
 async function loadCurrent() {
   try {
-    $("#newBtn").classList.toggle('hidden',state.module==='dashboard');
+    $("#newBtn").classList.toggle('hidden',['dashboard','finance'].includes(state.module));
     $("#importClientsBtn").classList.toggle('hidden',state.module!=='clients');
     $("#workflowFilter").classList.toggle('hidden',!['dashboard','expenses','advances'].includes(state.module));
     if(state.module==='dashboard') {
@@ -147,6 +149,10 @@ async function loadCurrent() {
       state.rows=[...state.dashboard.advances.map(r=>({...r,entity:'advances'})),...state.dashboard.expenses.map(r=>({...r,entity:'expenses'}))];
       render();
       return;
+    }
+    if(state.module==='finance') {
+      state.rows=await request(API+'/finance/projects');
+      render();return;
     }
     if (["projects","personnel","clients","clientprojects"].includes(state.module)) await loadCatalogs();
 
@@ -178,6 +184,12 @@ function filteredRows() {
 }
 
 function renderStats() {
+  if(state.module==='finance') {
+    $('#stats').innerHTML=`<div class="stat"><span>Proyectos</span><strong>${state.rows.length}</strong></div>
+      <div class="stat"><span>Con presupuesto definido</span><strong>${state.rows.filter(r=>r.budget!==null).length}</strong></div>
+      <div class="stat"><span>Gasto mayor al presupuesto</span><strong>${state.rows.filter(r=>r.budget!==null && Number(r.approved)>Number(r.budget)).length}</strong></div>`;
+    return;
+  }
   if(state.module==='dashboard') {
     const {advances,expenses}=state.dashboard;
     const pending=advances.reduce((n,r)=>n+Math.max(0,Math.round(Number(r.balance)*100)),0)/100;
@@ -248,7 +260,13 @@ function render() {
   const rows = filteredRows();
   $("#countLabel").textContent = rows.length + " registro(s)";
 
-  if (state.module === 'dashboard') {
+  if(state.module==='finance') {
+    thead.innerHTML='<tr><th>Proyecto</th><th>Cliente</th><th>Presupuesto PEN</th><th>Aprobado PEN</th><th>Disponible PEN</th><th>Acciones</th></tr>';
+    tbody.innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}</td><td>${esc(r.client_name)}</td>
+      <td>${r.budget===null?'Sin definir':'S/ '+Number(r.budget).toFixed(2)}</td><td>S/ ${Number(r.approved).toFixed(2)}</td>
+      <td>${r.budget===null?'Sin definir':'S/ '+(Number(r.budget)-Number(r.approved)).toFixed(2)}</td>
+      <td><button class="action-btn" data-finance="${r.id}">Presupuesto y liquidación</button></td></tr>`).join(''):emptyRow(6);
+  } else if (state.module === 'dashboard') {
     thead.innerHTML='<tr><th>Tipo</th><th>Proyecto</th><th>Responsable</th><th>Estado</th><th>Importe</th><th>Saldo</th><th>Vencimiento</th><th>Acciones</th></tr>';
     tbody.innerHTML=rows.length ? rows.map(r=>`<tr><td>${r.entity==='advances'?'Anticipo':'Rendición'} #${esc(r.id)}</td>
       <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}</td><td>${esc(r.applicant_name || r.producer_name)}</td>
@@ -354,6 +372,7 @@ function render() {
     button.addEventListener("click", () => openForm(state.rows.find((r) => Number(r.id) === Number(button.dataset.edit))));
   });
   tbody.querySelectorAll('[data-workflow]').forEach(button=>button.addEventListener('click',()=>openWorkflow(button.dataset.workflow,button.dataset.id)));
+  tbody.querySelectorAll('[data-finance]').forEach(button=>button.addEventListener('click',()=>openFinanceProject(button.dataset.finance)));
   tbody.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteRow(button.dataset.delete));
   });
@@ -802,6 +821,9 @@ function updateWorkflowFields() {
   const action=workflowForm.elements.action.value;
   const amount=['DEVOLUCION','REEMBOLSO'].includes(action);
   const expense=['VINCULAR','DESVINCULAR'].includes(action);
+  const bank=['DESEMBOLSAR','DEVOLUCION','REEMBOLSO'].includes(action);
+  $('#workflowDocumentLabel').classList.toggle('hidden',!bank);
+  workflowForm.elements.document.required=bank;
   $('#workflowAmountLabel').classList.toggle('hidden',!amount);
   $('#workflowExpenseLabel').classList.toggle('hidden',!expense);
   workflowForm.elements.amount.required=amount;
@@ -844,10 +866,14 @@ async function openWorkflow(entity,id) {
         <div class="workflow-summary">${[['Desembolsado',r.disbursed],['Rendido aprobado',r.approved],['Devuelto',r.returned],['Reembolsado',r.reimbursed],['Saldo',r.balance]].map(([label,value])=>`<p>${label}<strong>S/ ${Number(value).toFixed(2)}</strong></p>`).join('')}</div>
         <p>Saldo positivo: por sustentar o devolver. Saldo negativo: reembolso pendiente. Los importes se concilian en soles.</p>
         <h3>Rendiciones vinculadas</h3>${data.linked.map(e=>`<p>#${esc(e.id)} · ${esc(e.series)}-${esc(e.document_number)} · S/ ${Number(e.amount).toFixed(2)}</p>`).join('') || '<p>No hay rendiciones vinculadas.</p>'}
-        <h3>Movimientos registrados</h3>${data.movements.map(m=>`<p>${esc(m.kind)} · S/ ${Number(m.amount).toFixed(2)} · ${esc(m.reference)}</p>`).join('') || '<p>No hay desembolsos registrados.</p>'}
+        <h3>Movimientos registrados</h3>${data.movements.map(m=>`<p>#${m.id} · ${esc(m.kind)} · S/ ${Number(m.amount).toFixed(2)} · ${esc(m.reference)}<br>${m.files.map(f=>`<a href="${API}/workflow/movement-files/${f.id}" target="_blank" rel="noopener">${esc(f.file_name)}</a>`).join(' · ') || 'Constancia pendiente'}</p>`).join('') || '<p>No hay desembolsos registrados.</p>'}
         ${r.workflow_status==='SOLICITADO' && !r.applicant_personnel_id?'<p>Asigna un solicitante del personal mediante Editar antes de aprobar.</p>':''}`;
     }
     workflowForm.classList.toggle('hidden',!actions.length);
+    const evidenceForm=$('#movementEvidenceForm');
+    evidenceForm.reset();$('#movementEvidenceError').textContent='';
+    evidenceForm.classList.toggle('hidden',entity!=='advances' || !manager || !data.movements.length);
+    evidenceForm.elements.movement_id.innerHTML=(data.movements || []).map(m=>`<option value="${m.id}">#${m.id} · ${esc(m.kind)} · S/ ${Number(m.amount).toFixed(2)}${m.files.length?'':' · Sin constancia'}</option>`).join('');
     workflowForm.elements.action.innerHTML=actions.map(([value,label])=>`<option value="${value}">${esc(label)}</option>`).join('');
     $('#workflowHistory').innerHTML=data.history.map(h=>`<div class="history-entry"><strong>${esc(h.action)}</strong> · ${esc(h.actor_name)} · ${esc(new Date(h.created_at).toLocaleString('es-PE',{timeZone:'America/Lima'}))}<br>${esc(h.comment)}</div>`).join('') || '<p>Sin cambios de estado registrados.</p>';
     updateWorkflowFields();
@@ -861,12 +887,27 @@ workflowForm.addEventListener('submit',async event=>{
   $('#workflowError').textContent='';
   try {
     const {entity,id}=workflowContext;
-    await request(`${API}/workflow/${entity}/${id}/action`,{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(workflowForm)))});
+    const formData=new FormData(workflowForm);
+    const data=Object.fromEntries(formData);delete data.document;
+    const bank=['DESEMBOLSAR','DEVOLUCION','REEMBOLSO'].includes(data.action);
+    await request(`${API}/workflow/${entity}/${id}/action`,{method:'POST',body:bank?formData:JSON.stringify(data)});
     await loadCurrent();
     await openWorkflow(entity,id);
     toast('Acción registrada correctamente.');
   } catch(error) { $('#workflowError').textContent=error.message; }
   finally { button.disabled=false; }
+});
+$('#movementEvidenceForm').addEventListener('submit',async event=>{
+  event.preventDefault();const form=event.currentTarget;
+  const button=form.querySelector('button[type="submit"]');button.disabled=true;
+  $('#movementEvidenceError').textContent='';
+  try {
+    const data=new FormData(form);const id=data.get('movement_id');data.delete('movement_id');
+    await request(`${API}/workflow/movements/${id}/files`,{method:'POST',body:data});
+    await openWorkflow(workflowContext.entity,workflowContext.id);
+    toast('Constancia adjunta al movimiento.');
+  } catch(error) {$('#movementEvidenceError').textContent=error.message;}
+  finally {button.disabled=false;}
 });
 
 $("#loginForm")?.addEventListener("submit",async(event)=>{
@@ -943,4 +984,5 @@ $("#importClientProjectsFile")?.addEventListener("change",async(event)=>{
   }
 });
 
+initializeFinance({request,toast,onUpdated:loadCurrent});
 initializeAuth();

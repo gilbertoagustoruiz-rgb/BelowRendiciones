@@ -36,7 +36,10 @@ const dataUpload = multer({
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static("public"));
+app.use('/api',(_req,res,next)=>{res.set('Cache-Control','no-store');next();});
+app.use(express.static("public",{setHeaders(res,filePath){
+  if(filePath.endsWith('sw.js') || filePath.endsWith('index.html'))res.setHeader('Cache-Control','no-cache');
+}}));
 
 const catalogs = {
   clients: { table: "clients", fields: ["name", "ruc", "responsible_person"], required: ["name", "ruc", "responsible_person"] },

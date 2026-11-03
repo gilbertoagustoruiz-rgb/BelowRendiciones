@@ -1,4 +1,6 @@
 import { initializeFinance, openFinanceProject } from './finance.js';
+import { initializeUi, closeMenu, icon, moduleIcons, moduleCopy, renderMobileNavigation, decorateTables } from './ui.js';
+import { initializePwa } from './pwa.js';
 const API = "/api";
 
 const modules = {
@@ -56,7 +58,7 @@ async function request(url, options = {}) {
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
   let response;
   try { response = await fetch(url, { ...options, headers, credentials: "same-origin" }); }
-  catch (_) { throw new Error("No se pudo conectar con el servidor. Comprueba que DigitalOcean esté disponible y vuelve a intentar."); }
+  catch (_) { throw new Error(navigator.onLine ? 'No se pudo conectar. Intenta actualizar en unos momentos.' : 'Sin conexión. Conéctate para consultar datos y guardar operaciones.'); }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && !url.includes("/auth/")) showAuth();
@@ -67,6 +69,10 @@ async function request(url, options = {}) {
 
 
 function showAuth(bootstrap=false) {
+  loadSequence++;
+  closeMenu();
+  document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
+  state.rows=[];state.catalogs={};state.projects=[];state.dashboard=null;tbody.innerHTML='';$('#stats').innerHTML='';
   state.currentUser=null;
   $("#appShell")?.classList.add("hidden");
   $("#authView")?.classList.remove("hidden");
@@ -84,7 +90,8 @@ function showApp(user) {
   if (!allowed.includes(state.module)) {
     state.module=allowed[0] || "expenses";
   }
-  $("#pageTitle").textContent=modules[state.module]?.title || "Below Rendiciones";
+  $("#pageTitle").textContent=moduleCopy[state.module]?.[0] || modules[state.module]?.title || "Below Rendiciones";
+  $('#pageSubtitle').textContent=moduleCopy[state.module]?.[1] || 'Administra y consulta tus registros.';
   $("#importClientProjectsBtn")?.classList.toggle("hidden", state.module !== "clientprojects");
   $("#importClientsBtn")?.classList.toggle("hidden", state.module !== "clients");
   renderNav();
@@ -112,21 +119,28 @@ function renderNav() {
   nav.innerHTML = Object.entries(modules)
     .filter(([key])=>allowed.has(key))
     .map(([key, mod]) =>
-      `<button class="nav-btn ${state.module === key ? "active" : ""}" data-module="${key}">${mod.title}</button>`
+      `<button class="nav-btn ${state.module === key ? "active" : ""}" ${state.module===key?'aria-current="page"':''} data-module="${key}">${icon(moduleIcons[key])}<span>${key==='dashboard'?'Inicio':mod.title}</span></button>`
     ).join("");
   nav.querySelectorAll(".nav-btn").forEach((button) => {
     button.addEventListener("click", () => changeModule(button.dataset.module));
   });
+  if(state.currentUser)renderMobileNavigation(state.currentUser,state.module);
 }
 
 async function changeModule(module) {
+  if(!state.currentUser?.modules?.includes(module))return false;
+  closeMenu();
   state.module = module;
   state.editing = null;
-  $("#pageTitle").textContent = modules[module].title;
+  $("#pageTitle").textContent = moduleCopy[module]?.[0] || modules[module].title;
+  $('#pageSubtitle').textContent=moduleCopy[module]?.[1] || 'Administra y consulta tus registros.';
   $("#search").value = "";
+  $('#workflowFilter').value='';
   $("#importClientProjectsBtn")?.classList.toggle("hidden", module !== "clientprojects");
   renderNav();
-  await loadCurrent();
+  const loaded=await loadCurrent();
+  if(loaded)$('#appMain').focus({preventScroll:true});
+  return loaded;
 }
 
 async function loadCatalogs() {
@@ -139,38 +153,49 @@ async function loadProjects() {
   state.projects = await request(API + "/projects");
 }
 
+let loadSequence=0;
 async function loadCurrent() {
+  const sequence=++loadSequence,module=state.module;
+  $('.records-card').setAttribute('aria-busy','true');$('#loadError').classList.add('hidden');
+  $('#syncStatus').textContent='Actualizando información…';
+  $('#refreshBtn').disabled=true;
   try {
-    $("#newBtn").classList.toggle('hidden',['dashboard','finance'].includes(state.module));
-    $("#importClientsBtn").classList.toggle('hidden',state.module!=='clients');
-    $("#workflowFilter").classList.toggle('hidden',!['dashboard','expenses','advances'].includes(state.module));
-    if(state.module==='dashboard') {
-      state.dashboard=await request(API+'/workflow/dashboard');
-      state.rows=[...state.dashboard.advances.map(r=>({...r,entity:'advances'})),...state.dashboard.expenses.map(r=>({...r,entity:'expenses'}))];
-      render();
-      return;
-    }
-    if(state.module==='finance') {
-      state.rows=await request(API+'/finance/projects');
-      render();return;
-    }
-    if (["projects","personnel","clients","clientprojects"].includes(state.module)) await loadCatalogs();
-
-    if (state.module === "expenses") {
+    $("#newBtn").classList.toggle('hidden',['dashboard','finance'].includes(module));
+    $('#newBtn').textContent=module==='expenses'?'+ Nueva rendición':module==='advances'?'+ Solicitar anticipo':'+ Nuevo '+modules[module].singular.toLowerCase();
+    $("#importClientsBtn").classList.toggle('hidden',module!=='clients');
+    $("#workflowFilter").classList.toggle('hidden',!['dashboard','expenses','advances'].includes(module));
+    let rows,dashboard;
+    if(module==='dashboard') {
+      dashboard=await request(API+'/workflow/dashboard');
+      rows=[...dashboard.advances.map(r=>({...r,entity:'advances'})),...dashboard.expenses.map(r=>({...r,entity:'expenses'}))];
+    } else if(module==='finance') rows=await request(API+'/finance/projects');
+    else if (module === "expenses") {
       await Promise.all([loadCatalogs(), loadProjects()]);
       const result = await request(API + "/expenses");
-      state.rows = result.rows;
+      rows = result.rows;
       state.sunatConfigured = Boolean(result.sunatConfigured);
-    } else if (state.module === "advances") {
+    } else if (module === "advances") {
       await Promise.all([loadCatalogs(), loadProjects()]);
       const result = await request(API + "/advances");
-      state.rows = result.rows;
+      rows = result.rows;
     } else {
-      state.rows = await request(API + "/" + state.module);
+      if (["projects","personnel","clients","clientprojects"].includes(module)) await loadCatalogs();
+      rows = await request(API + "/" + module);
     }
+    if(sequence!==loadSequence || module!==state.module || !state.currentUser)return false;
+    state.rows=rows;if(dashboard)state.dashboard=dashboard;
     render();
+    $('#syncStatus').textContent='Actualizado a las '+new Date().toLocaleTimeString('es-PE',{timeZone:'America/Lima',hour:'2-digit',minute:'2-digit'});
+    return true;
   } catch (error) {
+    if(sequence!==loadSequence || module!==state.module)return false;
+    state.rows=[];tbody.innerHTML='';$('#stats').innerHTML='';
+    $('#loadError').classList.remove('hidden');$('#loadErrorMessage').textContent=error.message;
+    $('#syncStatus').textContent='No se pudo actualizar';
     toast(error.message, true);
+    return false;
+  } finally {
+    if(sequence===loadSequence){$('.records-card').setAttribute('aria-busy','false');$('#refreshBtn').disabled=false;}
   }
 }
 
@@ -268,7 +293,7 @@ function render() {
       <td><button class="action-btn" data-finance="${r.id}">Presupuesto y liquidación</button></td></tr>`).join(''):emptyRow(6);
   } else if (state.module === 'dashboard') {
     thead.innerHTML='<tr><th>Tipo</th><th>Proyecto</th><th>Responsable</th><th>Estado</th><th>Importe</th><th>Saldo</th><th>Vencimiento</th><th>Acciones</th></tr>';
-    tbody.innerHTML=rows.length ? rows.map(r=>`<tr><td>${r.entity==='advances'?'Anticipo':'Rendición'} #${esc(r.id)}</td>
+    tbody.innerHTML=rows.length ? rows.map(r=>`<tr><td>${r.entity==='advances'?'Anticipo':'Rendición'} #${esc(r.id)}${r.overdue?'<br>'+statusBadge('VENCIDO'):''}</td>
       <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}</td><td>${esc(r.applicant_name || r.producer_name)}</td>
       <td>${statusBadge(r.workflow_status || r.approval_status)}${r.entity==='expenses'?'<br><small>SUNAT: '+esc(r.validation_status)+(r.approval_status==='APROBADO' && !r.advance_id?' · Por vincular':'')+'</small>':''}</td><td>S/ ${Number(r.amount).toFixed(2)}</td>
       <td>${r.entity==='advances' ? 'S/ '+Number(r.balance).toFixed(2) : '—'}</td>
@@ -379,14 +404,19 @@ function render() {
   tbody.querySelectorAll("[data-validate]").forEach((button) => {
     button.addEventListener("click", () => validateExpense(button.dataset.validate));
   });
+  $('#recordsTable').dataset.module=state.module;
+  decorateTables();
+  const filters=state.module==='dashboard'?[['','Todos'],['ENVIADO','Por revisar'],['OBSERVADO','Observadas'],['VENCIDO','Vencidos']]:state.module==='expenses'?[['','Todas'],['BORRADOR','Borradores'],['ENVIADO','Enviadas'],['OBSERVADO','Observadas'],['APROBADO','Aprobadas']]:state.module==='advances'?[['','Todos'],['SOLICITADO','Solicitados'],['DESEMBOLSADO','Por rendir'],['LIQUIDADO','Liquidados']]:[];
+  $('#quickFilters').innerHTML=filters.map(([value,label])=>`<button type="button" class="filter-chip" data-filter="${value}" aria-pressed="${$('#workflowFilter').value===value}">${label}</button>`).join('');
+  $('#quickFilters').querySelectorAll('[data-filter]').forEach(button=>button.addEventListener('click',()=>{$('#workflowFilter').value=button.dataset.filter;render();}));
 }
 
 function inputField(name,label,type,value="",extra="") {
-  return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${esc(value ?? "")}" required ${extra}></div>`;
+  return `<div class="field"><label for="record-${name}">${label}</label><input id="record-${name}" name="${name}" type="${type}" ${type==='number'?'inputmode="decimal"':''} value="${esc(value ?? "")}" required ${extra}></div>`;
 }
 
 function selectHtml(name,label,options,selected,required=true,extra="") {
-  return `<div class="field"><label>${label}</label><select name="${name}" ${required ? "required" : ""} ${extra}>
+  return `<div class="field"><label for="record-${name}">${label}</label><select id="record-${name}" name="${name}" ${required ? "required" : ""} ${extra}>
     <option value="">Seleccionar...</option>
     ${options.map((o) => `<option value="${o.value}" ${String(selected ?? "")===String(o.value) ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
   </select></div>`;
@@ -418,7 +448,7 @@ function refreshExpenseConcepts() {
   conceptSelect.innerHTML = '<option value="">Seleccionar...</option>' +
     (project?.concepts || []).map((c)=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
 
-  producerSelect.value = project ? String(project.producer_id) : "";
+  producerSelect.value = ['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile) ? String(state.currentUser.id) : project ? String(project.producer_id) : "";
 }
 
 async function scanExpenseDocument(file) {
@@ -501,7 +531,7 @@ function openForm(row=null) {
       '<div class="field"><label>Concepto del Evento</label><select name="concept_id" required><option value="">Seleccionar...</option>'+
         (selectedProject?.concepts || []).map((c)=>'<option value="'+c.id+'" '+(String(row?.concept_id ?? "")===String(c.id) ? "selected" : "")+'>'+esc(c.name)+'</option>').join("")+
       '</select></div>',
-      selectHtml("producer_id","Productor",personnelOptions("PRODUCTOR"),row?.producer_id ?? null,true),
+      selectHtml("producer_id","Productor",['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?[{value:state.currentUser.id,label:state.currentUser.full_name}]:personnelOptions("PRODUCTOR"),row?.producer_id ?? (['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?state.currentUser.id:null),true),
       '<div class="field full receipt-upload"><label>'+(row ? "Reemplazar PDF o foto (opcional)" : "PDF o foto del comprobante")+'</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" '+(row ? "" : "required")+'><div id="documentScanStatus" class="scan-status">'+
         (row ? 'Si no seleccionas un archivo nuevo, se conservará el documento actual.' : 'Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.')+
       '</div></div>',
@@ -812,6 +842,8 @@ $("#closeModal").addEventListener("click",()=>modal.close());
 $("#cancelBtn").addEventListener("click",()=>modal.close());
 $("#search").addEventListener("input",render);
 $('#workflowFilter').addEventListener('change',render);
+$('#refreshBtn').addEventListener('click',loadCurrent);
+$('#retryLoad').addEventListener('click',loadCurrent);
 
 let workflowContext;
 const workflowForm=$('#workflowForm');
@@ -942,8 +974,8 @@ $("#bootstrapForm")?.addEventListener("submit",async(event)=>{
 });
 
 $("#logoutBtn")?.addEventListener("click",async()=>{
-  try { await request(API+"/auth/logout",{method:"POST",body:"{}"}); } catch(_) {}
-  showAuth(false);
+  try { await request(API+"/auth/logout",{method:"POST",body:"{}"});showAuth(false); }
+  catch(error) {toast('No se pudo cerrar la sesión. Conéctate y vuelve a intentar.',true);}
 });
 
 $("#importClientsBtn")?.addEventListener("click",()=>$("#importClientsFile")?.click());
@@ -984,5 +1016,9 @@ $("#importClientProjectsFile")?.addEventListener("change",async(event)=>{
   }
 });
 
+initializeUi({onNavigate:changeModule,onCreate:async module=>{if(await changeModule(module) && state.module===module)openForm();}});
 initializeFinance({request,toast,onUpdated:loadCurrent});
+initializePwa({notify:toast,onReconnect:()=>{if(state.currentUser)loadCurrent();else initializeAuth();}});
+const requestedView=new URLSearchParams(location.search).get('view');
+if(Object.hasOwn(modules,requestedView))state.module=requestedView;
 initializeAuth();

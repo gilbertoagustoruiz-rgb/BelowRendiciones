@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Below Rendiciones",
+  "short_name": "Below",
+  "description": "Tus rendiciones, anticipos y proyectos al día.",
+  "lang": "es-PE",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f9",
+  "theme_color": "#0a1f3f",
+  "icons": [
+    {"src":"/icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"/icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ],
+  "shortcuts": [
+    {"name":"Mis rendiciones","short_name":"Rendiciones","url":"/?view=expenses"},
+    {"name":"Mis anticipos","short_name":"Anticipos","url":"/?view=advances"}
+  ]
+}

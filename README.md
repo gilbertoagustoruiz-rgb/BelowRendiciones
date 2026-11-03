@@ -13,6 +13,38 @@ Aplicativo web para gestión de proyectos, conceptos de evento y rendición de g
 - Conceptos de Eventos
 - Presupuesto y liquidación (ADMIN / COORDINADOR)
 
+## Celular y PWA (v1.8)
+
+El frontend adapta los registros a tarjetas con datos principales y **Ver más datos**, navegación
+inferior (Inicio, Rendiciones, Anticipos y Más), menú por permisos, filtros rápidos y accesos
+**Registrar gasto** y **Solicitar anticipo**. Los formularios ocupan la pantalla del celular y
+los importes usan teclado decimal. Presupuestos y liquidaciones también se adaptan a tarjetas.
+Se mantienen las tablas completas en escritorio. Incluye estados de carga, reintento y actualización.
+
+El manifiesto y los iconos permiten instalar la app en pantalla de inicio. **Instalar app** usa
+la invitación del navegador cuando está disponible y ofrece instrucciones para Android/iPhone
+en los demás casos. La instalación real depende del navegador; en iPhone se utiliza Safari y
+Compartir → Añadir a pantalla de inicio. Los accesos del manifiesto abren rendiciones o anticipos
+después de comprobar la sesión y sus permisos.
+
+Desplegar bajo **HTTPS** (localhost sirve para desarrollo), con los archivos públicos en la raíz.
+`/sw.js` y el HTML no deben recibir una caché HTTP inmutable en el proxy/CDN.
+El service worker conserva solamente la interfaz pública y sus recursos. Excluye todas las rutas
+`/api/`, PDFs, Excel, comprobantes, constancias y subidas; las respuestas API llevan `Cache-Control: no-store`.
+No se guardan datos financieros ni contraseñas en IndexedDB/localStorage y no se encolan pagos.
+
+Sin conexión se abre la interfaz ya instalada y aparece un aviso. Iniciar sesión, consultar datos,
+leer comprobantes y guardar requieren conexión. No hay guardado de borradores sin conexión.
+La actualización de versión se ofrece con un botón; no recarga automáticamente un formulario abierto.
+En cada nueva versión se debe cambiar `CACHE` en `public/sw.js` y actualizar la lista de recursos
+cuando se agreguen módulos. La activación elimina únicamente cachés antiguas de la interfaz de Below.
+Los PNG del monograma se regeneran con `python tools/generate-pwa-icons.py`, sin dependencias adicionales.
+
+Las pruebas PWA verifican manifiesto/iconos, recursos disponibles, interfaz sin red, exclusión
+de datos privados y limpieza selectiva de caché. Las pruebas en navegador usan dimensiones móviles;
+la instalación y la cámara deben comprobarse además en los dispositivos reales del equipo.
+Referencia técnica: [MDN: uso de service workers](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers).
+
 ## Presupuestos, constancias y liquidación (v1.7)
 
 ### Presupuesto por proyecto y concepto

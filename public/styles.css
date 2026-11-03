@@ -259,3 +259,19 @@ button:disabled { opacity: .55; cursor: not-allowed; }
   gap: 10px;
   flex-wrap: wrap;
 }
+/* Review and reconciliation are available on desktop and mobile. */
+.workflow-content { padding:24px; }
+#workflowModal { width:min(900px,95vw); max-height:90vh; overflow:auto; }
+#workflowForm { margin:20px 0; }
+#workflowForm label { display:flex; flex-direction:column; gap:8px; }
+#workflowForm .full { grid-column:1 / -1; }
+#workflowError { color:#ae2525; margin:0; }
+.workflow-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:12px; margin:16px 0; }
+.workflow-summary p { background:#f0f5fb; border-radius:8px; padding:12px; margin:0; }
+.workflow-summary strong { display:block; margin-top:6px; }
+.history-entry { border-bottom:1px solid #dbe2eb; padding:12px 0; overflow-wrap:anywhere; }
+.status.aprobado,.status.liquidado { background:#dcf5e5; color:#176534; }
+.status.observado { background:#fff0dc; color:#8a4c00; }
+.status.enviado,.status.desembolsado { background:#e1ecff; color:#174d97; }
+#workflowFilter { max-width:220px; }
+@media(max-width:600px) { .card-head { flex-wrap:wrap; } .workflow-content { padding:14px; } }

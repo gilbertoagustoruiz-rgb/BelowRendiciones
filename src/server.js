@@ -11,6 +11,7 @@ import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, testSunatConnection, validateCpe } from "./sunat.js";
 import { saveEvidence, sendEvidence } from "./storage.js";
 import { readReceiptDocument } from "./document-reader.js";
+import { createWorkflowRouter } from './workflow.js';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -137,10 +138,10 @@ async function getCurrentUser(req) {
 }
 
 const ROLE_MODULES = {
-  ADMIN: ["projects","expenses","advances","clients","clientprojects","profiles","personnel","concepts"],
-  COORDINADOR: ["projects","expenses","advances","clients","clientprojects","personnel"],
-  PRODUCTOR: ["expenses","advances"],
-  "SUB PRODUCTOR": ["expenses","advances"],
+  ADMIN: ["dashboard","projects","expenses","advances","clients","clientprojects","profiles","personnel","concepts"],
+  COORDINADOR: ["dashboard","projects","expenses","advances","clients","clientprojects","personnel"],
+  PRODUCTOR: ["dashboard","expenses","advances"],
+  "SUB PRODUCTOR": ["dashboard","expenses","advances"],
   EJECUTIVO: [],
 };
 
@@ -317,6 +318,23 @@ app.use("/api", requireAuth, (req,res,next)=>{
     return res.status(403).json({ error:"No tienes permiso para realizar esta acción." });
   }
   next();
+});
+
+app.use('/api/workflow', createWorkflowRouter(pool));
+
+// Reject edits before accepting an uploaded replacement. Database triggers provide
+// the final protection if a concurrent review changes the state afterwards.
+app.use('/api', async (req,res,next)=>{
+  const match=req.path.match(/^\/(expenses|advances)\/(\d+)$/);
+  if (!match || !['PUT','DELETE'].includes(req.method)) return next();
+  try {
+    const expense=match[1]==='expenses';
+    const result=await query(expense ? 'SELECT approval_status AS status FROM expense_reports WHERE id=$1' : 'SELECT workflow_status AS status FROM advance_requests WHERE id=$1',[match[2]]);
+    if(result.rows[0] && !(expense ? ['BORRADOR','OBSERVADO'] : ['SOLICITADO']).includes(result.rows[0].status)) {
+      return res.status(409).json({error:expense ? 'La rendición está en revisión o aprobada. Solicita que sea observada antes de editar.' : 'El anticipo aprobado no puede editarse ni eliminarse.'});
+    }
+    next();
+  } catch(error) { dbError(res,error); }
 });
 
 async function syncClientsFromMaster(db) {

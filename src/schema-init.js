@@ -12,6 +12,7 @@ export async function ensureSchema() {
 
   await pool.query("SELECT 1");
   await pool.query(sql);
+  await pool.query(await fs.readFile(path.resolve('sql/workflow.sql'), 'utf8'));
 
   console.log("Esquema PostgreSQL verificado/inicializado correctamente.");
 }

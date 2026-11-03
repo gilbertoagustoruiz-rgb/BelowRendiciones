@@ -1,6 +1,7 @@
 const API = "/api";
 
 const modules = {
+  dashboard: { title: "Pendientes y conciliación", singular: "Pendiente" },
   projects: { title: "Proyectos", singular: "Proyecto" },
   expenses: { title: "Rendiciones", singular: "Rendición" },
   advances: { title: "Anticipo", singular: "Anticipo" },
@@ -19,7 +20,7 @@ const fields = {
 };
 
 let state = {
-  module: "projects",
+  module: "dashboard",
   rows: [],
   editing: null,
   catalogs: {},
@@ -138,6 +139,15 @@ async function loadProjects() {
 
 async function loadCurrent() {
   try {
+    $("#newBtn").classList.toggle('hidden',state.module==='dashboard');
+    $("#importClientsBtn").classList.toggle('hidden',state.module!=='clients');
+    $("#workflowFilter").classList.toggle('hidden',!['dashboard','expenses','advances'].includes(state.module));
+    if(state.module==='dashboard') {
+      state.dashboard=await request(API+'/workflow/dashboard');
+      state.rows=[...state.dashboard.advances.map(r=>({...r,entity:'advances'})),...state.dashboard.expenses.map(r=>({...r,entity:'expenses'}))];
+      render();
+      return;
+    }
     if (["projects","personnel","clients","clientprojects"].includes(state.module)) await loadCatalogs();
 
     if (state.module === "expenses") {
@@ -160,11 +170,26 @@ async function loadCurrent() {
 
 function filteredRows() {
   const q = $("#search").value.toLowerCase().trim();
-  if (!q) return state.rows;
-  return state.rows.filter((row) => JSON.stringify(row).toLowerCase().includes(q));
+  const filter=$('#workflowFilter').value;
+  return state.rows.filter(row=>(!q || JSON.stringify(row).toLowerCase().includes(q)) &&
+    (state.module!=='dashboard' || filter || row.workflow_status!=='LIQUIDADO') &&
+    (!['dashboard','expenses','advances'].includes(state.module) || !filter ||
+      (filter==='VENCIDO' ? row.overdue : (row.approval_status || row.workflow_status)===filter)));
 }
 
 function renderStats() {
+  if(state.module==='dashboard') {
+    const {advances,expenses}=state.dashboard;
+    const pending=advances.reduce((n,r)=>n+Math.max(0,Math.round(Number(r.balance)*100)),0)/100;
+    const reimbursement=advances.reduce((n,r)=>n+Math.max(0,-Math.round(Number(r.balance)*100)),0)/100;
+    $('#stats').innerHTML=`<div class="stat"><span>Saldo por sustentar / devolver</span><strong>S/ ${pending.toFixed(2)}</strong></div>
+      <div class="stat"><span>Reembolsos pendientes</span><strong>S/ ${reimbursement.toFixed(2)}</strong></div>
+      <div class="stat"><span>Anticipos vencidos</span><strong>${advances.filter(r=>r.overdue).length}</strong></div>
+      <div class="stat"><span>Rendiciones enviadas / observadas</span><strong>${expenses.filter(r=>r.approval_status==='ENVIADO').length} / ${expenses.filter(r=>r.approval_status==='OBSERVADO').length}</strong></div>
+      <div class="stat"><span>Comprobantes pendientes SUNAT</span><strong>${expenses.filter(r=>!['VALIDADO','ANULADO','NO_EXISTE'].includes(r.validation_status)).length}</strong></div>
+      <div class="stat"><span>Aprobadas por vincular</span><strong>${expenses.filter(r=>r.approval_status==='APROBADO' && !r.advance_id).length}</strong></div>`;
+    return;
+  }
   if (state.module === "projects") {
     const clients = new Set(state.rows.map((r) => r.client_id)).size;
     const concepts = state.rows.reduce((sum, r) => sum + (r.concepts?.length || 0), 0);
@@ -223,7 +248,15 @@ function render() {
   const rows = filteredRows();
   $("#countLabel").textContent = rows.length + " registro(s)";
 
-  if (state.module === "projects") {
+  if (state.module === 'dashboard') {
+    thead.innerHTML='<tr><th>Tipo</th><th>Proyecto</th><th>Responsable</th><th>Estado</th><th>Importe</th><th>Saldo</th><th>Vencimiento</th><th>Acciones</th></tr>';
+    tbody.innerHTML=rows.length ? rows.map(r=>`<tr><td>${r.entity==='advances'?'Anticipo':'Rendición'} #${esc(r.id)}</td>
+      <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}</td><td>${esc(r.applicant_name || r.producer_name)}</td>
+      <td>${statusBadge(r.workflow_status || r.approval_status)}${r.entity==='expenses'?'<br><small>SUNAT: '+esc(r.validation_status)+(r.approval_status==='APROBADO' && !r.advance_id?' · Por vincular':'')+'</small>':''}</td><td>S/ ${Number(r.amount).toFixed(2)}</td>
+      <td>${r.entity==='advances' ? 'S/ '+Number(r.balance).toFixed(2) : '—'}</td>
+      <td>${r.entity==='advances' ? formatDateDisplay(r.settlement_date)+(r.overdue?' · VENCIDO':'') : '—'}</td>
+      <td><button class="action-btn" data-workflow="${r.entity}" data-id="${r.id}">Revisar</button></td></tr>`).join('') : emptyRow(8);
+  } else if (state.module === "projects") {
     thead.innerHTML = `<tr>
       <th>Código</th><th>Proyecto</th><th>Cliente</th><th>Servicio</th><th>Lugar</th>
       <th>Fechas</th><th>Comisión</th><th>Moneda</th><th>Tipo Cambio</th><th>Productor</th><th>Sub Productor</th>
@@ -259,12 +292,13 @@ function render() {
       <td>${formatDateDisplay(r.issue_date)}</td>
       <td>S/ ${Number(r.amount).toFixed(2)}</td>
       <td><a class="file-link" target="_blank" href="${API}/expenses/${r.id}/file">Abrir documento</a></td>
-      <td>${statusBadge(r.validation_status)}</td>
+      <td>${statusBadge(r.validation_status)}<br><small>Aprobación interna</small><br>${statusBadge(r.approval_status)}</td>
       <td><small>CP: ${esc(r.sunat_estado_cp ?? "—")} · RUC: ${esc(r.sunat_estado_ruc ?? "—")} · Domicilio: ${esc(r.sunat_cond_domi_ruc ?? "—")}<br>${esc(r.sunat_message || "")}</small></td>
       <td class="actions">
-        <button class="action-btn" data-edit="${r.id}">Editar</button>
+        <button class="action-btn" data-workflow="expenses" data-id="${r.id}">Revisión e historial</button>
+        ${['BORRADOR','OBSERVADO'].includes(r.approval_status) ? `<button class="action-btn" data-edit="${r.id}">Editar</button>` : ''}
         <button class="action-btn" data-validate="${r.id}">Validar SUNAT</button>
-        <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
+        ${['BORRADOR','OBSERVADO'].includes(r.approval_status) ? `<button class="action-btn delete" data-delete="${r.id}">Eliminar</button>` : ''}
       </td>
     </tr>`).join("") : emptyRow(10);
   } else if (state.module === "advances") {
@@ -277,15 +311,16 @@ function render() {
       <td>${esc(r.applicant_name)}<br><small>${esc(r.bank)} · ${esc(r.account_type)}</small></td>
       <td>${esc(r.beneficiary_name)}<br><small>${esc(r.beneficiary_document)}</small></td>
       <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}<br><small>${esc(r.client_name)}</small></td>
-      <td><strong>S/ ${Number(r.amount || 0).toFixed(2)}</strong></td>
+      <td><strong>S/ ${Number(r.amount || 0).toFixed(2)}</strong><br>${statusBadge(r.workflow_status)}</td>
       <td>${formatDateDisplay(r.deposit_date)}</td>
       <td>${formatDateDisplay(r.settlement_date)}</td>
       <td>${esc(r.expected_document_type)}</td>
       <td class="actions">
-        <button class="action-btn" data-edit="${r.id}">Editar</button>
+        <button class="action-btn" data-workflow="advances" data-id="${r.id}">Conciliar e historial</button>
+        ${r.workflow_status==='SOLICITADO' ? `<button class="action-btn" data-edit="${r.id}">Editar</button>` : ''}
         <a class="action-btn" target="_blank" href="${API}/advances/${r.id}/pdf">Ver Solicitud</a>
         <a class="action-btn" href="${API}/advances/${r.id}/pdf?download=1">Descargar PDF</a>
-        <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
+        ${r.workflow_status==='SOLICITADO' ? `<button class="action-btn delete" data-delete="${r.id}">Eliminar</button>` : ''}
       </td>
     </tr>`).join("") : emptyRow(9);
   } else if (state.module === "personnel") {
@@ -318,6 +353,7 @@ function render() {
   tbody.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => openForm(state.rows.find((r) => Number(r.id) === Number(button.dataset.edit))));
   });
+  tbody.querySelectorAll('[data-workflow]').forEach(button=>button.addEventListener('click',()=>openWorkflow(button.dataset.workflow,button.dataset.id)));
   tbody.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteRow(button.dataset.delete));
   });
@@ -756,6 +792,82 @@ $("#newBtn").addEventListener("click",()=>openForm());
 $("#closeModal").addEventListener("click",()=>modal.close());
 $("#cancelBtn").addEventListener("click",()=>modal.close());
 $("#search").addEventListener("input",render);
+$('#workflowFilter').addEventListener('change',render);
+
+let workflowContext;
+const workflowForm=$('#workflowForm');
+const workflowDialog=$('#workflowModal');
+$('#closeWorkflow').addEventListener('click',()=>workflowDialog.close());
+function updateWorkflowFields() {
+  const action=workflowForm.elements.action.value;
+  const amount=['DEVOLUCION','REEMBOLSO'].includes(action);
+  const expense=['VINCULAR','DESVINCULAR'].includes(action);
+  $('#workflowAmountLabel').classList.toggle('hidden',!amount);
+  $('#workflowExpenseLabel').classList.toggle('hidden',!expense);
+  workflowForm.elements.amount.required=amount;
+  workflowForm.elements.expense_id.required=expense;
+  workflowForm.elements.comment.required=['OBSERVAR','DESEMBOLSAR','DEVOLUCION','REEMBOLSO','DESVINCULAR'].includes(action) ||
+    (action==='APROBAR' && workflowContext?.entity==='expenses' && workflowContext?.data.row.validation_status!=='VALIDADO');
+  const list=action==='DESVINCULAR' ? workflowContext?.data.linked : workflowContext?.data.candidates;
+  workflowForm.elements.expense_id.innerHTML='<option value="">Seleccionar...</option>'+(list || []).map(r=>`<option value="${esc(r.id)}">#${esc(r.id)} · ${esc(r.series)}-${esc(r.document_number)} · S/ ${Number(r.amount).toFixed(2)}</option>`).join('');
+}
+workflowForm.elements.action.addEventListener('change',updateWorkflowFields);
+async function openWorkflow(entity,id) {
+  try {
+    const data=await request(`${API}/workflow/${entity}/${id}`);
+    workflowContext={entity,id,data};
+    workflowForm.reset();
+    $('#workflowError').textContent='';
+    const r=data.row;
+    const manager=['ADMIN','COORDINADOR'].includes(state.currentUser.profile);
+    const own=String(entity==='expenses'?r.producer_id:r.applicant_personnel_id)===String(state.currentUser.id);
+    const actions=[];
+    $('#workflowTitle').textContent=(entity==='expenses'?'Revisión de rendición #':'Conciliación de anticipo #')+id;
+    if(entity==='expenses') {
+      if(['BORRADOR','OBSERVADO'].includes(r.approval_status)) actions.push(['ENVIAR','Enviar a revisión']);
+      if(manager && !own && r.approval_status==='ENVIADO') actions.push(['APROBAR','Aprobar rendición'],['OBSERVAR','Observar y devolver para corrección']);
+      $('#workflowDetails').innerHTML=`<p>${statusBadge(r.approval_status)} · S/ ${Number(r.amount).toFixed(2)} · ${esc(r.series)}-${esc(r.document_number)}</p>
+        <p>SUNAT: ${statusBadge(r.validation_status)}. Si no está validado, la aprobación requiere un motivo explícito.</p>
+        <a class="file-link" href="${API}/expenses/${id}/file" target="_blank" rel="noopener">Ver comprobante</a>`;
+    } else {
+      if(manager && !own && r.workflow_status==='SOLICITADO') actions.push(['APROBAR','Aprobar solicitud']);
+      if(manager && r.workflow_status==='APROBADO') actions.push(['DESEMBOLSAR','Confirmar desembolso de S/ '+Number(r.amount).toFixed(2)]);
+      if(manager && r.workflow_status==='DESEMBOLSADO') {
+        if(data.candidates.length) actions.push(['VINCULAR','Vincular rendición aprobada']);
+        if(Number(r.balance)>0) actions.push(['DEVOLUCION','Registrar devolución recibida']);
+        if(Number(r.balance)<0) actions.push(['REEMBOLSO','Registrar reembolso pagado']);
+        if(Number(r.balance)===0) actions.push(['LIQUIDAR','Liquidar anticipo']);
+        if(data.linked.length) actions.push(['DESVINCULAR','Corregir vinculación']);
+      }
+      $('#workflowDetails').innerHTML=`<p>${esc(r.project_code)} · ${esc(r.project_name)} · ${esc(r.applicant_name)} · ${statusBadge(r.workflow_status)}</p>
+        <p>Vence: ${formatDateDisplay(r.settlement_date)} ${r.overdue?' · VENCIDO':''}</p>
+        <div class="workflow-summary">${[['Desembolsado',r.disbursed],['Rendido aprobado',r.approved],['Devuelto',r.returned],['Reembolsado',r.reimbursed],['Saldo',r.balance]].map(([label,value])=>`<p>${label}<strong>S/ ${Number(value).toFixed(2)}</strong></p>`).join('')}</div>
+        <p>Saldo positivo: por sustentar o devolver. Saldo negativo: reembolso pendiente. Los importes se concilian en soles.</p>
+        <h3>Rendiciones vinculadas</h3>${data.linked.map(e=>`<p>#${esc(e.id)} · ${esc(e.series)}-${esc(e.document_number)} · S/ ${Number(e.amount).toFixed(2)}</p>`).join('') || '<p>No hay rendiciones vinculadas.</p>'}
+        <h3>Movimientos registrados</h3>${data.movements.map(m=>`<p>${esc(m.kind)} · S/ ${Number(m.amount).toFixed(2)} · ${esc(m.reference)}</p>`).join('') || '<p>No hay desembolsos registrados.</p>'}
+        ${r.workflow_status==='SOLICITADO' && !r.applicant_personnel_id?'<p>Asigna un solicitante del personal mediante Editar antes de aprobar.</p>':''}`;
+    }
+    workflowForm.classList.toggle('hidden',!actions.length);
+    workflowForm.elements.action.innerHTML=actions.map(([value,label])=>`<option value="${value}">${esc(label)}</option>`).join('');
+    $('#workflowHistory').innerHTML=data.history.map(h=>`<div class="history-entry"><strong>${esc(h.action)}</strong> · ${esc(h.actor_name)} · ${esc(new Date(h.created_at).toLocaleString('es-PE',{timeZone:'America/Lima'}))}<br>${esc(h.comment)}</div>`).join('') || '<p>Sin cambios de estado registrados.</p>';
+    updateWorkflowFields();
+    if(!workflowDialog.open) workflowDialog.showModal();
+  } catch(error) { toast(error.message,true); }
+}
+workflowForm.addEventListener('submit',async event=>{
+  event.preventDefault();
+  const button=workflowForm.querySelector('button[type="submit"]');
+  button.disabled=true;
+  $('#workflowError').textContent='';
+  try {
+    const {entity,id}=workflowContext;
+    await request(`${API}/workflow/${entity}/${id}/action`,{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(workflowForm)))});
+    await loadCurrent();
+    await openWorkflow(entity,id);
+    toast('Acción registrada correctamente.');
+  } catch(error) { $('#workflowError').textContent=error.message; }
+  finally { button.disabled=false; }
+});
 
 $("#loginForm")?.addEventListener("submit",async(event)=>{
   event.preventDefault();

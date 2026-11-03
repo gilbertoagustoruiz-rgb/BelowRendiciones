@@ -2,12 +2,23 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0a1f3f" />
   <title>Below Rendiciones</title>
+  <meta name="description" content="Gestiona tus gastos, anticipos y proyectos con Below Rendiciones." />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Below" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/mobile.css" />
 </head>
 <body>
+  <a class="skip-link" href="#appMain">Ir al contenido</a>
+  <div id="connectionBanner" class="connection-banner hidden" role="status" aria-live="polite">Sin conexión. Conéctate para consultar datos y guardar operaciones.</div>
+  <div id="updateBanner" class="update-banner hidden" role="status"><span>Hay una nueva versión de Below.</span><button id="updateApp" type="button">Actualizar app</button></div>
   <section id="authView" class="auth-view hidden">
     <div class="auth-card">
       <div class="auth-brand">
@@ -51,7 +62,10 @@
   </section>
 
   <div id="appShell" class="app-shell hidden">
-  <aside class="sidebar">
+  <header class="mobile-header"><div class="mobile-brand"><span class="brand-mark">B</span><strong>Below <small>Rendiciones</small></strong></div><button id="menuToggle" class="icon-label" type="button" aria-controls="sidebar" aria-expanded="false">Menú</button></header>
+  <button id="navBackdrop" class="nav-backdrop" type="button" aria-label="Cerrar menú" tabindex="-1"></button>
+  <aside class="sidebar" id="sidebar" aria-label="Menú principal">
+    <button id="closeMenu" class="close-menu icon-btn" type="button" aria-label="Cerrar menú">×</button>
     <div class="brand">
       <div class="brand-mark">B</div>
       <div><strong>Below</strong><span>Rendiciones</span></div>
@@ -61,14 +75,16 @@
       <span id="currentUserProfile">—</span>
       <button id="logoutBtn" type="button">Cerrar sesión</button>
     </div>
-    <nav id="nav"></nav>
+    <nav id="nav" aria-label="Módulos"></nav>
+    <button id="installApp" class="install-app" type="button">Instalar app</button>
   </aside>
 
-  <main>
+  <main id="appMain" tabindex="-1">
     <header class="topbar">
       <div>
         <p class="eyebrow">GESTIÓN DE EVENTOS</p>
         <h1 id="pageTitle">Proyectos</h1>
+        <p id="pageSubtitle" class="page-subtitle"></p>
       </div>
       <div class="topbar-actions">
         <button class="secondary hidden" id="importClientsBtn" type="button">Importar clientes Excel / CSV</button>
@@ -76,26 +92,38 @@
         <button class="secondary hidden" id="importClientProjectsBtn" type="button">Importar Excel / CSV</button>
         <input class="hidden" id="importClientProjectsFile" type="file" accept=".xlsx,.xls,.csv" />
         <button class="primary" id="newBtn">+ Nuevo registro</button>
+        <button class="secondary refresh-btn" id="refreshBtn" type="button" aria-label="Actualizar información">Actualizar</button>
       </div>
     </header>
 
+    <section id="quickActions" class="quick-actions hidden" aria-label="Accesos rápidos"></section>
+    <p id="syncStatus" class="sync-status" role="status"></p>
+    <div id="loadError" class="load-error hidden" role="alert"><p id="loadErrorMessage"></p><button id="retryLoad" type="button" class="secondary">Volver a intentar</button></div>
+
     <section class="stats" id="stats"></section>
 
-    <section class="card">
+    <section class="card records-card" aria-label="Registros">
       <div class="card-head">
-        <input id="search" type="search" placeholder="Buscar en todos los campos..." />
+        <input id="search" type="search" placeholder="Buscar proyecto, comprobante o persona..." aria-label="Buscar registros" />
+        <select id="workflowFilter" aria-label="Filtrar por estado" class="hidden">
+          <option value="">Todos los estados</option>
+          <option>BORRADOR</option><option>ENVIADO</option><option>OBSERVADO</option><option>APROBADO</option>
+          <option>SOLICITADO</option><option>DESEMBOLSADO</option><option>LIQUIDADO</option><option>VENCIDO</option>
+        </select>
         <span id="countLabel"></span>
       </div>
+      <div id="quickFilters" class="quick-filters" aria-label="Filtros rápidos"></div>
       <div class="table-wrap">
-        <table>
+        <table id="recordsTable">
           <thead id="thead"></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
     </section>
   </main>
+  <nav id="mobileNav" class="mobile-nav" aria-label="Navegación rápida"></nav>
 
-  <dialog id="modal">
+  <dialog id="modal" aria-labelledby="modalTitle">
     <form id="recordForm">
       <div class="modal-head">
         <div>
@@ -114,7 +142,52 @@
   </dialog>
 
   </div>
-  <div id="toast"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="installHelp" aria-labelledby="installTitle"><div class="workflow-content"><div class="modal-head"><h2 id="installTitle">Lleva Below en tu celular</h2><button id="closeInstallHelp" class="icon-btn" type="button" aria-label="Cerrar ayuda de instalación">×</button></div><p>Abre la aplicación desde tu pantalla de inicio, sin buscar una pestaña.</p><ol><li><strong>Android:</strong> abre el menú de Chrome y elige «Instalar aplicación» o «Añadir a pantalla de inicio».</li><li><strong>iPhone:</strong> abre esta página en Safari, toca Compartir y elige «Añadir a pantalla de inicio».</li></ol><p>Necesitas conexión para consultar datos, subir comprobantes y registrar movimientos.</p></div></dialog>
+  <dialog id="workflowModal" aria-labelledby="workflowTitle">
+    <div class="workflow-content">
+      <div class="modal-head"><h2 id="workflowTitle"></h2><button class="icon-btn" id="closeWorkflow" aria-label="Cerrar">×</button></div>
+      <div id="workflowDetails"></div>
+      <form id="workflowForm" class="form-grid">
+        <label>Acción<select name="action" required></select></label>
+        <label id="workflowExpenseLabel">Rendición<select name="expense_id"></select></label>
+        <label id="workflowAmountLabel">Importe (S/)<input name="amount" type="number" min="0.01" max="9999999999.99" step="0.01"></label>
+        <label id="workflowDocumentLabel" class="full">Constancia bancaria (PDF o imagen, máximo 10 MB)<input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp"></label>
+        <label class="full">Observación / referencia<textarea name="comment" maxlength="2000" rows="3"></textarea></label>
+        <button type="submit" class="primary">Registrar acción</button>
+        <p id="workflowError" class="full" role="alert"></p>
+      </form>
+      <form id="movementEvidenceForm" class="form-grid hidden">
+        <h3 class="full">Adjuntar constancia a un movimiento registrado</h3>
+        <label>Movimiento<select name="movement_id" required></select></label>
+        <label>Constancia PDF o imagen (máximo 10 MB)<input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required></label>
+        <label class="full">Motivo / referencia<input name="comment" maxlength="2000" required></label>
+        <button type="submit" class="secondary">Adjuntar constancia</button><p class="full" id="movementEvidenceError" role="alert"></p>
+      </form>
+      <h3>Historial</h3><div id="workflowHistory"></div>
+    </div>
+  </dialog>
+  <dialog id="financeModal" aria-labelledby="financeTitle">
+    <div class="workflow-content">
+      <div class="modal-head"><h2 id="financeTitle"></h2><button class="icon-btn" id="closeFinance" aria-label="Cerrar presupuesto">×</button></div>
+      <p id="financeProject"></p>
+      <div class="finance-actions"><a class="action-btn" id="financePdf">Descargar liquidación PDF</a><a class="action-btn" id="financeExcel">Descargar liquidación Excel</a><button id="reloadFinance" type="button" class="secondary">Recargar proyecto</button></div>
+      <div id="financeSummary" class="workflow-summary"></div>
+      <p id="financeAlerts" role="status"></p>
+      <p>Importes en soles. El saldo neto no liquida saldos individuales. Las rendiciones aprobadas sin vincular se muestran por separado.</p>
+      <form id="budgetForm">
+        <h3>Presupuesto por concepto (PEN)</h3>
+        <p>Vacío significa sin presupuesto definido; cero autoriza S/ 0.00. El gasto excedido genera una alerta. No se realiza conversión automática de dólares.</p>
+        <div class="table-wrap"><table><thead><tr><th>Concepto</th><th>Presupuesto PEN</th><th>Aprobado PEN</th><th>Por aprobar PEN</th><th>Disponible PEN</th><th>Alerta</th></tr></thead><tbody id="budgetRows"></tbody></table></div>
+        <label class="budget-reason">Motivo del presupuesto o cambio<textarea id="budgetReason" maxlength="2000" rows="2" required></textarea></label>
+        <button type="submit" class="primary">Guardar presupuesto</button><p id="budgetError" role="alert"></p>
+      </form>
+      <h3>Anticipos y saldos</h3><div class="table-wrap"><table><thead><tr><th>Solicitante</th><th>Estado</th><th>Desembolsado</th><th>Rendido</th><th>Devuelto</th><th>Reembolsado</th><th>Saldo</th></tr></thead><tbody id="financeAdvances"></tbody></table></div>
+      <h3>Rendiciones</h3><div class="table-wrap"><table><thead><tr><th>Comprobante</th><th>Productor</th><th>Concepto</th><th>Importe</th><th>Estado</th><th>Anticipo</th><th>Archivo</th></tr></thead><tbody id="financeExpenses"></tbody></table></div>
+      <h3>Movimientos y constancias</h3><div class="table-wrap"><table><thead><tr><th>Movimiento</th><th>Tipo</th><th>Importe</th><th>Referencia</th><th>Constancias</th></tr></thead><tbody id="financeMovements"></tbody></table></div>
+      <h3>Historial del presupuesto</h3><div id="budgetHistory"></div>
+    </div>
+  </dialog>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

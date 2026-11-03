@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 
 const localDir = path.resolve("uploads");
 
@@ -36,8 +36,9 @@ function extensionFor(file) {
   return ".jpg";
 }
 
-export async function saveEvidence(file) {
-  const key = "rendiciones/" +
+export async function saveEvidence(file, folder='rendiciones') {
+  if (!['rendiciones','constancias'].includes(folder)) throw new Error('Carpeta de evidencia inválida.');
+  const key = folder + "/" +
     new Date().toISOString().slice(0, 10) + "/" +
     crypto.randomUUID() + extensionFor(file);
 
@@ -57,6 +58,17 @@ export async function saveEvidence(file) {
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, file.buffer);
   return { storage: "local", key };
+}
+
+// Used only to clean up a newly uploaded object if its database transaction fails.
+export async function removeEvidence(saved) {
+  if(saved.storage==='spaces') {
+    await spacesClient().send(new DeleteObjectCommand({Bucket:process.env.SPACES_BUCKET,Key:saved.key}));
+  } else {
+    const target=path.resolve(localDir,saved.key);
+    if(!target.startsWith(localDir+path.sep)) throw new Error('Ruta de evidencia inválida.');
+    await fs.unlink(target);
+  }
 }
 
 export async function sendEvidence(res, expense) {

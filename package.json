@@ -1,6 +1,6 @@
 {
   "name": "below-rendiciones",
-  "version": "1.5.0",
+  "version": "1.8.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,19 +10,23 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "db:init": "node src/init-db.js",
-    "check": "node --check src/server.js && node --check src/db.js && node --check src/sunat.js && node --check src/storage.js && node --check src/schema-init.js && node --check src/init-db.js && node --check src/document-reader.js && node --check public/app.js"
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check src/db.js && node --check src/sunat.js && node --check src/storage.js && node --check src/schema-init.js && node --check src/init-db.js && node --check src/document-reader.js && node --check src/workflow.js && node --check src/bank-evidence.js && node --check src/finance.js && node --check src/finance-export.js && node --check public/app.js && node --check public/finance.js && node --check public/ui.js && node --check public/pwa.js && node --check public/sw.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.744.0",
+    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "multer": "^1.4.5-lts.1",
-    "pg": "^8.13.1",
     "pdf-parse": "^1.1.1",
-    "tesseract.js": "^5.1.1",
     "pdfkit": "^0.15.0",
-    "bcryptjs": "^2.4.3",
+    "pg": "^8.13.1",
+    "tesseract.js": "^5.1.1",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15"
   }
 }

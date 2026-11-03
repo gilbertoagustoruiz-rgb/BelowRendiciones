@@ -1,6 +1,11 @@
+import { initializeFinance, openFinanceProject } from './finance.js';
+import { initializeUi, closeMenu, icon, moduleIcons, moduleCopy, renderMobileNavigation, decorateTables } from './ui.js';
+import { initializePwa } from './pwa.js';
 const API = "/api";
 
 const modules = {
+  dashboard: { title: "Pendientes y conciliación", singular: "Pendiente" },
+  finance: { title: "Presupuesto y liquidación", singular: "Proyecto" },
   projects: { title: "Proyectos", singular: "Proyecto" },
   expenses: { title: "Rendiciones", singular: "Rendición" },
   advances: { title: "Anticipo", singular: "Anticipo" },
@@ -19,7 +24,7 @@ const fields = {
 };
 
 let state = {
-  module: "projects",
+  module: "dashboard",
   rows: [],
   editing: null,
   catalogs: {},
@@ -53,7 +58,7 @@ async function request(url, options = {}) {
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
   let response;
   try { response = await fetch(url, { ...options, headers, credentials: "same-origin" }); }
-  catch (_) { throw new Error("No se pudo conectar con el servidor. Comprueba que DigitalOcean esté disponible y vuelve a intentar."); }
+  catch (_) { throw new Error(navigator.onLine ? 'No se pudo conectar. Intenta actualizar en unos momentos.' : 'Sin conexión. Conéctate para consultar datos y guardar operaciones.'); }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && !url.includes("/auth/")) showAuth();
@@ -64,6 +69,10 @@ async function request(url, options = {}) {
 
 
 function showAuth(bootstrap=false) {
+  loadSequence++;
+  closeMenu();
+  document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
+  state.rows=[];state.catalogs={};state.projects=[];state.dashboard=null;tbody.innerHTML='';$('#stats').innerHTML='';
   state.currentUser=null;
   $("#appShell")?.classList.add("hidden");
   $("#authView")?.classList.remove("hidden");
@@ -81,7 +90,8 @@ function showApp(user) {
   if (!allowed.includes(state.module)) {
     state.module=allowed[0] || "expenses";
   }
-  $("#pageTitle").textContent=modules[state.module]?.title || "Below Rendiciones";
+  $("#pageTitle").textContent=moduleCopy[state.module]?.[0] || modules[state.module]?.title || "Below Rendiciones";
+  $('#pageSubtitle').textContent=moduleCopy[state.module]?.[1] || 'Administra y consulta tus registros.';
   $("#importClientProjectsBtn")?.classList.toggle("hidden", state.module !== "clientprojects");
   $("#importClientsBtn")?.classList.toggle("hidden", state.module !== "clients");
   renderNav();
@@ -109,21 +119,28 @@ function renderNav() {
   nav.innerHTML = Object.entries(modules)
     .filter(([key])=>allowed.has(key))
     .map(([key, mod]) =>
-      `<button class="nav-btn ${state.module === key ? "active" : ""}" data-module="${key}">${mod.title}</button>`
+      `<button class="nav-btn ${state.module === key ? "active" : ""}" ${state.module===key?'aria-current="page"':''} data-module="${key}">${icon(moduleIcons[key])}<span>${key==='dashboard'?'Inicio':mod.title}</span></button>`
     ).join("");
   nav.querySelectorAll(".nav-btn").forEach((button) => {
     button.addEventListener("click", () => changeModule(button.dataset.module));
   });
+  if(state.currentUser)renderMobileNavigation(state.currentUser,state.module);
 }
 
 async function changeModule(module) {
+  if(!state.currentUser?.modules?.includes(module))return false;
+  closeMenu();
   state.module = module;
   state.editing = null;
-  $("#pageTitle").textContent = modules[module].title;
+  $("#pageTitle").textContent = moduleCopy[module]?.[0] || modules[module].title;
+  $('#pageSubtitle').textContent=moduleCopy[module]?.[1] || 'Administra y consulta tus registros.';
   $("#search").value = "";
+  $('#workflowFilter').value='';
   $("#importClientProjectsBtn")?.classList.toggle("hidden", module !== "clientprojects");
   renderNav();
-  await loadCurrent();
+  const loaded=await loadCurrent();
+  if(loaded)$('#appMain').focus({preventScroll:true});
+  return loaded;
 }
 
 async function loadCatalogs() {
@@ -136,35 +153,80 @@ async function loadProjects() {
   state.projects = await request(API + "/projects");
 }
 
+let loadSequence=0;
 async function loadCurrent() {
+  const sequence=++loadSequence,module=state.module;
+  $('.records-card').setAttribute('aria-busy','true');$('#loadError').classList.add('hidden');
+  $('#syncStatus').textContent='Actualizando información…';
+  $('#refreshBtn').disabled=true;
   try {
-    if (["projects","personnel","clients","clientprojects"].includes(state.module)) await loadCatalogs();
-
-    if (state.module === "expenses") {
+    $("#newBtn").classList.toggle('hidden',['dashboard','finance'].includes(module));
+    $('#newBtn').textContent=module==='expenses'?'+ Nueva rendición':module==='advances'?'+ Solicitar anticipo':'+ Nuevo '+modules[module].singular.toLowerCase();
+    $("#importClientsBtn").classList.toggle('hidden',module!=='clients');
+    $("#workflowFilter").classList.toggle('hidden',!['dashboard','expenses','advances'].includes(module));
+    let rows,dashboard;
+    if(module==='dashboard') {
+      dashboard=await request(API+'/workflow/dashboard');
+      rows=[...dashboard.advances.map(r=>({...r,entity:'advances'})),...dashboard.expenses.map(r=>({...r,entity:'expenses'}))];
+    } else if(module==='finance') rows=await request(API+'/finance/projects');
+    else if (module === "expenses") {
       await Promise.all([loadCatalogs(), loadProjects()]);
       const result = await request(API + "/expenses");
-      state.rows = result.rows;
+      rows = result.rows;
       state.sunatConfigured = Boolean(result.sunatConfigured);
-    } else if (state.module === "advances") {
+    } else if (module === "advances") {
       await Promise.all([loadCatalogs(), loadProjects()]);
       const result = await request(API + "/advances");
-      state.rows = result.rows;
+      rows = result.rows;
     } else {
-      state.rows = await request(API + "/" + state.module);
+      if (["projects","personnel","clients","clientprojects"].includes(module)) await loadCatalogs();
+      rows = await request(API + "/" + module);
     }
+    if(sequence!==loadSequence || module!==state.module || !state.currentUser)return false;
+    state.rows=rows;if(dashboard)state.dashboard=dashboard;
     render();
+    $('#syncStatus').textContent='Actualizado a las '+new Date().toLocaleTimeString('es-PE',{timeZone:'America/Lima',hour:'2-digit',minute:'2-digit'});
+    return true;
   } catch (error) {
+    if(sequence!==loadSequence || module!==state.module)return false;
+    state.rows=[];tbody.innerHTML='';$('#stats').innerHTML='';
+    $('#loadError').classList.remove('hidden');$('#loadErrorMessage').textContent=error.message;
+    $('#syncStatus').textContent='No se pudo actualizar';
     toast(error.message, true);
+    return false;
+  } finally {
+    if(sequence===loadSequence){$('.records-card').setAttribute('aria-busy','false');$('#refreshBtn').disabled=false;}
   }
 }
 
 function filteredRows() {
   const q = $("#search").value.toLowerCase().trim();
-  if (!q) return state.rows;
-  return state.rows.filter((row) => JSON.stringify(row).toLowerCase().includes(q));
+  const filter=$('#workflowFilter').value;
+  return state.rows.filter(row=>(!q || JSON.stringify(row).toLowerCase().includes(q)) &&
+    (state.module!=='dashboard' || filter || row.workflow_status!=='LIQUIDADO') &&
+    (!['dashboard','expenses','advances'].includes(state.module) || !filter ||
+      (filter==='VENCIDO' ? row.overdue : (row.approval_status || row.workflow_status)===filter)));
 }
 
 function renderStats() {
+  if(state.module==='finance') {
+    $('#stats').innerHTML=`<div class="stat"><span>Proyectos</span><strong>${state.rows.length}</strong></div>
+      <div class="stat"><span>Con presupuesto definido</span><strong>${state.rows.filter(r=>r.budget!==null).length}</strong></div>
+      <div class="stat"><span>Gasto mayor al presupuesto</span><strong>${state.rows.filter(r=>r.budget!==null && Number(r.approved)>Number(r.budget)).length}</strong></div>`;
+    return;
+  }
+  if(state.module==='dashboard') {
+    const {advances,expenses}=state.dashboard;
+    const pending=advances.reduce((n,r)=>n+Math.max(0,Math.round(Number(r.balance)*100)),0)/100;
+    const reimbursement=advances.reduce((n,r)=>n+Math.max(0,-Math.round(Number(r.balance)*100)),0)/100;
+    $('#stats').innerHTML=`<div class="stat"><span>Saldo por sustentar / devolver</span><strong>S/ ${pending.toFixed(2)}</strong></div>
+      <div class="stat"><span>Reembolsos pendientes</span><strong>S/ ${reimbursement.toFixed(2)}</strong></div>
+      <div class="stat"><span>Anticipos vencidos</span><strong>${advances.filter(r=>r.overdue).length}</strong></div>
+      <div class="stat"><span>Rendiciones enviadas / observadas</span><strong>${expenses.filter(r=>r.approval_status==='ENVIADO').length} / ${expenses.filter(r=>r.approval_status==='OBSERVADO').length}</strong></div>
+      <div class="stat"><span>Comprobantes pendientes SUNAT</span><strong>${expenses.filter(r=>!['VALIDADO','ANULADO','NO_EXISTE'].includes(r.validation_status)).length}</strong></div>
+      <div class="stat"><span>Aprobadas por vincular</span><strong>${expenses.filter(r=>r.approval_status==='APROBADO' && !r.advance_id).length}</strong></div>`;
+    return;
+  }
   if (state.module === "projects") {
     const clients = new Set(state.rows.map((r) => r.client_id)).size;
     const concepts = state.rows.reduce((sum, r) => sum + (r.concepts?.length || 0), 0);
@@ -223,7 +285,21 @@ function render() {
   const rows = filteredRows();
   $("#countLabel").textContent = rows.length + " registro(s)";
 
-  if (state.module === "projects") {
+  if(state.module==='finance') {
+    thead.innerHTML='<tr><th>Proyecto</th><th>Cliente</th><th>Presupuesto PEN</th><th>Aprobado PEN</th><th>Disponible PEN</th><th>Acciones</th></tr>';
+    tbody.innerHTML=rows.length?rows.map(r=>`<tr><td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}</td><td>${esc(r.client_name)}</td>
+      <td>${r.budget===null?'Sin definir':'S/ '+Number(r.budget).toFixed(2)}</td><td>S/ ${Number(r.approved).toFixed(2)}</td>
+      <td>${r.budget===null?'Sin definir':'S/ '+(Number(r.budget)-Number(r.approved)).toFixed(2)}</td>
+      <td><button class="action-btn" data-finance="${r.id}">Presupuesto y liquidación</button></td></tr>`).join(''):emptyRow(6);
+  } else if (state.module === 'dashboard') {
+    thead.innerHTML='<tr><th>Tipo</th><th>Proyecto</th><th>Responsable</th><th>Estado</th><th>Importe</th><th>Saldo</th><th>Vencimiento</th><th>Acciones</th></tr>';
+    tbody.innerHTML=rows.length ? rows.map(r=>`<tr><td>${r.entity==='advances'?'Anticipo':'Rendición'} #${esc(r.id)}${r.overdue?'<br>'+statusBadge('VENCIDO'):''}</td>
+      <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}</td><td>${esc(r.applicant_name || r.producer_name)}</td>
+      <td>${statusBadge(r.workflow_status || r.approval_status)}${r.entity==='expenses'?'<br><small>SUNAT: '+esc(r.validation_status)+(r.approval_status==='APROBADO' && !r.advance_id?' · Por vincular':'')+'</small>':''}</td><td>S/ ${Number(r.amount).toFixed(2)}</td>
+      <td>${r.entity==='advances' ? 'S/ '+Number(r.balance).toFixed(2) : '—'}</td>
+      <td>${r.entity==='advances' ? formatDateDisplay(r.settlement_date)+(r.overdue?' · VENCIDO':'') : '—'}</td>
+      <td><button class="action-btn" data-workflow="${r.entity}" data-id="${r.id}">Revisar</button></td></tr>`).join('') : emptyRow(8);
+  } else if (state.module === "projects") {
     thead.innerHTML = `<tr>
       <th>Código</th><th>Proyecto</th><th>Cliente</th><th>Servicio</th><th>Lugar</th>
       <th>Fechas</th><th>Comisión</th><th>Moneda</th><th>Tipo Cambio</th><th>Productor</th><th>Sub Productor</th>
@@ -259,12 +335,13 @@ function render() {
       <td>${formatDateDisplay(r.issue_date)}</td>
       <td>S/ ${Number(r.amount).toFixed(2)}</td>
       <td><a class="file-link" target="_blank" href="${API}/expenses/${r.id}/file">Abrir documento</a></td>
-      <td>${statusBadge(r.validation_status)}</td>
+      <td>${statusBadge(r.validation_status)}<br><small>Aprobación interna</small><br>${statusBadge(r.approval_status)}</td>
       <td><small>CP: ${esc(r.sunat_estado_cp ?? "—")} · RUC: ${esc(r.sunat_estado_ruc ?? "—")} · Domicilio: ${esc(r.sunat_cond_domi_ruc ?? "—")}<br>${esc(r.sunat_message || "")}</small></td>
       <td class="actions">
-        <button class="action-btn" data-edit="${r.id}">Editar</button>
+        <button class="action-btn" data-workflow="expenses" data-id="${r.id}">Revisión e historial</button>
+        ${['BORRADOR','OBSERVADO'].includes(r.approval_status) ? `<button class="action-btn" data-edit="${r.id}">Editar</button>` : ''}
         <button class="action-btn" data-validate="${r.id}">Validar SUNAT</button>
-        <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
+        ${['BORRADOR','OBSERVADO'].includes(r.approval_status) ? `<button class="action-btn delete" data-delete="${r.id}">Eliminar</button>` : ''}
       </td>
     </tr>`).join("") : emptyRow(10);
   } else if (state.module === "advances") {
@@ -277,15 +354,16 @@ function render() {
       <td>${esc(r.applicant_name)}<br><small>${esc(r.bank)} · ${esc(r.account_type)}</small></td>
       <td>${esc(r.beneficiary_name)}<br><small>${esc(r.beneficiary_document)}</small></td>
       <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}<br><small>${esc(r.client_name)}</small></td>
-      <td><strong>S/ ${Number(r.amount || 0).toFixed(2)}</strong></td>
+      <td><strong>S/ ${Number(r.amount || 0).toFixed(2)}</strong><br>${statusBadge(r.workflow_status)}</td>
       <td>${formatDateDisplay(r.deposit_date)}</td>
       <td>${formatDateDisplay(r.settlement_date)}</td>
       <td>${esc(r.expected_document_type)}</td>
       <td class="actions">
-        <button class="action-btn" data-edit="${r.id}">Editar</button>
+        <button class="action-btn" data-workflow="advances" data-id="${r.id}">Conciliar e historial</button>
+        ${r.workflow_status==='SOLICITADO' ? `<button class="action-btn" data-edit="${r.id}">Editar</button>` : ''}
         <a class="action-btn" target="_blank" href="${API}/advances/${r.id}/pdf">Ver Solicitud</a>
         <a class="action-btn" href="${API}/advances/${r.id}/pdf?download=1">Descargar PDF</a>
-        <button class="action-btn delete" data-delete="${r.id}">Eliminar</button>
+        ${r.workflow_status==='SOLICITADO' ? `<button class="action-btn delete" data-delete="${r.id}">Eliminar</button>` : ''}
       </td>
     </tr>`).join("") : emptyRow(9);
   } else if (state.module === "personnel") {
@@ -318,20 +396,27 @@ function render() {
   tbody.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => openForm(state.rows.find((r) => Number(r.id) === Number(button.dataset.edit))));
   });
+  tbody.querySelectorAll('[data-workflow]').forEach(button=>button.addEventListener('click',()=>openWorkflow(button.dataset.workflow,button.dataset.id)));
+  tbody.querySelectorAll('[data-finance]').forEach(button=>button.addEventListener('click',()=>openFinanceProject(button.dataset.finance)));
   tbody.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteRow(button.dataset.delete));
   });
   tbody.querySelectorAll("[data-validate]").forEach((button) => {
     button.addEventListener("click", () => validateExpense(button.dataset.validate));
   });
+  $('#recordsTable').dataset.module=state.module;
+  decorateTables();
+  const filters=state.module==='dashboard'?[['','Todos'],['ENVIADO','Por revisar'],['OBSERVADO','Observadas'],['VENCIDO','Vencidos']]:state.module==='expenses'?[['','Todas'],['BORRADOR','Borradores'],['ENVIADO','Enviadas'],['OBSERVADO','Observadas'],['APROBADO','Aprobadas']]:state.module==='advances'?[['','Todos'],['SOLICITADO','Solicitados'],['DESEMBOLSADO','Por rendir'],['LIQUIDADO','Liquidados']]:[];
+  $('#quickFilters').innerHTML=filters.map(([value,label])=>`<button type="button" class="filter-chip" data-filter="${value}" aria-pressed="${$('#workflowFilter').value===value}">${label}</button>`).join('');
+  $('#quickFilters').querySelectorAll('[data-filter]').forEach(button=>button.addEventListener('click',()=>{$('#workflowFilter').value=button.dataset.filter;render();}));
 }
 
 function inputField(name,label,type,value="",extra="") {
-  return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${esc(value ?? "")}" required ${extra}></div>`;
+  return `<div class="field"><label for="record-${name}">${label}</label><input id="record-${name}" name="${name}" type="${type}" ${type==='number'?'inputmode="decimal"':''} value="${esc(value ?? "")}" required ${extra}></div>`;
 }
 
 function selectHtml(name,label,options,selected,required=true,extra="") {
-  return `<div class="field"><label>${label}</label><select name="${name}" ${required ? "required" : ""} ${extra}>
+  return `<div class="field"><label for="record-${name}">${label}</label><select id="record-${name}" name="${name}" ${required ? "required" : ""} ${extra}>
     <option value="">Seleccionar...</option>
     ${options.map((o) => `<option value="${o.value}" ${String(selected ?? "")===String(o.value) ? "selected" : ""}>${esc(o.label)}</option>`).join("")}
   </select></div>`;
@@ -363,7 +448,7 @@ function refreshExpenseConcepts() {
   conceptSelect.innerHTML = '<option value="">Seleccionar...</option>' +
     (project?.concepts || []).map((c)=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
 
-  producerSelect.value = project ? String(project.producer_id) : "";
+  producerSelect.value = ['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile) ? String(state.currentUser.id) : project ? String(project.producer_id) : "";
 }
 
 async function scanExpenseDocument(file) {
@@ -446,7 +531,7 @@ function openForm(row=null) {
       '<div class="field"><label>Concepto del Evento</label><select name="concept_id" required><option value="">Seleccionar...</option>'+
         (selectedProject?.concepts || []).map((c)=>'<option value="'+c.id+'" '+(String(row?.concept_id ?? "")===String(c.id) ? "selected" : "")+'>'+esc(c.name)+'</option>').join("")+
       '</select></div>',
-      selectHtml("producer_id","Productor",personnelOptions("PRODUCTOR"),row?.producer_id ?? null,true),
+      selectHtml("producer_id","Productor",['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?[{value:state.currentUser.id,label:state.currentUser.full_name}]:personnelOptions("PRODUCTOR"),row?.producer_id ?? (['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?state.currentUser.id:null),true),
       '<div class="field full receipt-upload"><label>'+(row ? "Reemplazar PDF o foto (opcional)" : "PDF o foto del comprobante")+'</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" '+(row ? "" : "required")+'><div id="documentScanStatus" class="scan-status">'+
         (row ? 'Si no seleccionas un archivo nuevo, se conservará el documento actual.' : 'Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.')+
       '</div></div>',
@@ -756,6 +841,106 @@ $("#newBtn").addEventListener("click",()=>openForm());
 $("#closeModal").addEventListener("click",()=>modal.close());
 $("#cancelBtn").addEventListener("click",()=>modal.close());
 $("#search").addEventListener("input",render);
+$('#workflowFilter').addEventListener('change',render);
+$('#refreshBtn').addEventListener('click',loadCurrent);
+$('#retryLoad').addEventListener('click',loadCurrent);
+
+let workflowContext;
+const workflowForm=$('#workflowForm');
+const workflowDialog=$('#workflowModal');
+$('#closeWorkflow').addEventListener('click',()=>workflowDialog.close());
+function updateWorkflowFields() {
+  const action=workflowForm.elements.action.value;
+  const amount=['DEVOLUCION','REEMBOLSO'].includes(action);
+  const expense=['VINCULAR','DESVINCULAR'].includes(action);
+  const bank=['DESEMBOLSAR','DEVOLUCION','REEMBOLSO'].includes(action);
+  $('#workflowDocumentLabel').classList.toggle('hidden',!bank);
+  workflowForm.elements.document.required=bank;
+  $('#workflowAmountLabel').classList.toggle('hidden',!amount);
+  $('#workflowExpenseLabel').classList.toggle('hidden',!expense);
+  workflowForm.elements.amount.required=amount;
+  workflowForm.elements.expense_id.required=expense;
+  workflowForm.elements.comment.required=['OBSERVAR','DESEMBOLSAR','DEVOLUCION','REEMBOLSO','DESVINCULAR'].includes(action) ||
+    (action==='APROBAR' && workflowContext?.entity==='expenses' && workflowContext?.data.row.validation_status!=='VALIDADO');
+  const list=action==='DESVINCULAR' ? workflowContext?.data.linked : workflowContext?.data.candidates;
+  workflowForm.elements.expense_id.innerHTML='<option value="">Seleccionar...</option>'+(list || []).map(r=>`<option value="${esc(r.id)}">#${esc(r.id)} · ${esc(r.series)}-${esc(r.document_number)} · S/ ${Number(r.amount).toFixed(2)}</option>`).join('');
+}
+workflowForm.elements.action.addEventListener('change',updateWorkflowFields);
+async function openWorkflow(entity,id) {
+  try {
+    const data=await request(`${API}/workflow/${entity}/${id}`);
+    workflowContext={entity,id,data};
+    workflowForm.reset();
+    $('#workflowError').textContent='';
+    const r=data.row;
+    const manager=['ADMIN','COORDINADOR'].includes(state.currentUser.profile);
+    const own=String(entity==='expenses'?r.producer_id:r.applicant_personnel_id)===String(state.currentUser.id);
+    const actions=[];
+    $('#workflowTitle').textContent=(entity==='expenses'?'Revisión de rendición #':'Conciliación de anticipo #')+id;
+    if(entity==='expenses') {
+      if(['BORRADOR','OBSERVADO'].includes(r.approval_status)) actions.push(['ENVIAR','Enviar a revisión']);
+      if(manager && !own && r.approval_status==='ENVIADO') actions.push(['APROBAR','Aprobar rendición'],['OBSERVAR','Observar y devolver para corrección']);
+      $('#workflowDetails').innerHTML=`<p>${statusBadge(r.approval_status)} · S/ ${Number(r.amount).toFixed(2)} · ${esc(r.series)}-${esc(r.document_number)}</p>
+        <p>SUNAT: ${statusBadge(r.validation_status)}. Si no está validado, la aprobación requiere un motivo explícito.</p>
+        <a class="file-link" href="${API}/expenses/${id}/file" target="_blank" rel="noopener">Ver comprobante</a>`;
+    } else {
+      if(manager && !own && r.workflow_status==='SOLICITADO') actions.push(['APROBAR','Aprobar solicitud']);
+      if(manager && r.workflow_status==='APROBADO') actions.push(['DESEMBOLSAR','Confirmar desembolso de S/ '+Number(r.amount).toFixed(2)]);
+      if(manager && r.workflow_status==='DESEMBOLSADO') {
+        if(data.candidates.length) actions.push(['VINCULAR','Vincular rendición aprobada']);
+        if(Number(r.balance)>0) actions.push(['DEVOLUCION','Registrar devolución recibida']);
+        if(Number(r.balance)<0) actions.push(['REEMBOLSO','Registrar reembolso pagado']);
+        if(Number(r.balance)===0) actions.push(['LIQUIDAR','Liquidar anticipo']);
+        if(data.linked.length) actions.push(['DESVINCULAR','Corregir vinculación']);
+      }
+      $('#workflowDetails').innerHTML=`<p>${esc(r.project_code)} · ${esc(r.project_name)} · ${esc(r.applicant_name)} · ${statusBadge(r.workflow_status)}</p>
+        <p>Vence: ${formatDateDisplay(r.settlement_date)} ${r.overdue?' · VENCIDO':''}</p>
+        <div class="workflow-summary">${[['Desembolsado',r.disbursed],['Rendido aprobado',r.approved],['Devuelto',r.returned],['Reembolsado',r.reimbursed],['Saldo',r.balance]].map(([label,value])=>`<p>${label}<strong>S/ ${Number(value).toFixed(2)}</strong></p>`).join('')}</div>
+        <p>Saldo positivo: por sustentar o devolver. Saldo negativo: reembolso pendiente. Los importes se concilian en soles.</p>
+        <h3>Rendiciones vinculadas</h3>${data.linked.map(e=>`<p>#${esc(e.id)} · ${esc(e.series)}-${esc(e.document_number)} · S/ ${Number(e.amount).toFixed(2)}</p>`).join('') || '<p>No hay rendiciones vinculadas.</p>'}
+        <h3>Movimientos registrados</h3>${data.movements.map(m=>`<p>#${m.id} · ${esc(m.kind)} · S/ ${Number(m.amount).toFixed(2)} · ${esc(m.reference)}<br>${m.files.map(f=>`<a href="${API}/workflow/movement-files/${f.id}" target="_blank" rel="noopener">${esc(f.file_name)}</a>`).join(' · ') || 'Constancia pendiente'}</p>`).join('') || '<p>No hay desembolsos registrados.</p>'}
+        ${r.workflow_status==='SOLICITADO' && !r.applicant_personnel_id?'<p>Asigna un solicitante del personal mediante Editar antes de aprobar.</p>':''}`;
+    }
+    workflowForm.classList.toggle('hidden',!actions.length);
+    const evidenceForm=$('#movementEvidenceForm');
+    evidenceForm.reset();$('#movementEvidenceError').textContent='';
+    evidenceForm.classList.toggle('hidden',entity!=='advances' || !manager || !data.movements.length);
+    evidenceForm.elements.movement_id.innerHTML=(data.movements || []).map(m=>`<option value="${m.id}">#${m.id} · ${esc(m.kind)} · S/ ${Number(m.amount).toFixed(2)}${m.files.length?'':' · Sin constancia'}</option>`).join('');
+    workflowForm.elements.action.innerHTML=actions.map(([value,label])=>`<option value="${value}">${esc(label)}</option>`).join('');
+    $('#workflowHistory').innerHTML=data.history.map(h=>`<div class="history-entry"><strong>${esc(h.action)}</strong> · ${esc(h.actor_name)} · ${esc(new Date(h.created_at).toLocaleString('es-PE',{timeZone:'America/Lima'}))}<br>${esc(h.comment)}</div>`).join('') || '<p>Sin cambios de estado registrados.</p>';
+    updateWorkflowFields();
+    if(!workflowDialog.open) workflowDialog.showModal();
+  } catch(error) { toast(error.message,true); }
+}
+workflowForm.addEventListener('submit',async event=>{
+  event.preventDefault();
+  const button=workflowForm.querySelector('button[type="submit"]');
+  button.disabled=true;
+  $('#workflowError').textContent='';
+  try {
+    const {entity,id}=workflowContext;
+    const formData=new FormData(workflowForm);
+    const data=Object.fromEntries(formData);delete data.document;
+    const bank=['DESEMBOLSAR','DEVOLUCION','REEMBOLSO'].includes(data.action);
+    await request(`${API}/workflow/${entity}/${id}/action`,{method:'POST',body:bank?formData:JSON.stringify(data)});
+    await loadCurrent();
+    await openWorkflow(entity,id);
+    toast('Acción registrada correctamente.');
+  } catch(error) { $('#workflowError').textContent=error.message; }
+  finally { button.disabled=false; }
+});
+$('#movementEvidenceForm').addEventListener('submit',async event=>{
+  event.preventDefault();const form=event.currentTarget;
+  const button=form.querySelector('button[type="submit"]');button.disabled=true;
+  $('#movementEvidenceError').textContent='';
+  try {
+    const data=new FormData(form);const id=data.get('movement_id');data.delete('movement_id');
+    await request(`${API}/workflow/movements/${id}/files`,{method:'POST',body:data});
+    await openWorkflow(workflowContext.entity,workflowContext.id);
+    toast('Constancia adjunta al movimiento.');
+  } catch(error) {$('#movementEvidenceError').textContent=error.message;}
+  finally {button.disabled=false;}
+});
 
 $("#loginForm")?.addEventListener("submit",async(event)=>{
   event.preventDefault();
@@ -789,8 +974,8 @@ $("#bootstrapForm")?.addEventListener("submit",async(event)=>{
 });
 
 $("#logoutBtn")?.addEventListener("click",async()=>{
-  try { await request(API+"/auth/logout",{method:"POST",body:"{}"}); } catch(_) {}
-  showAuth(false);
+  try { await request(API+"/auth/logout",{method:"POST",body:"{}"});showAuth(false); }
+  catch(error) {toast('No se pudo cerrar la sesión. Conéctate y vuelve a intentar.',true);}
 });
 
 $("#importClientsBtn")?.addEventListener("click",()=>$("#importClientsFile")?.click());
@@ -831,4 +1016,9 @@ $("#importClientProjectsFile")?.addEventListener("change",async(event)=>{
   }
 });
 
+initializeUi({onNavigate:changeModule,onCreate:async module=>{if(await changeModule(module) && state.module===module)openForm();}});
+initializeFinance({request,toast,onUpdated:loadCurrent});
+initializePwa({notify:toast,onReconnect:()=>{if(state.currentUser)loadCurrent();else initializeAuth();}});
+const requestedView=new URLSearchParams(location.search).get('view');
+if(Object.hasOwn(modules,requestedView))state.module=requestedView;
 initializeAuth();

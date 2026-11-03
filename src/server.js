@@ -11,6 +11,8 @@ import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, testSunatConnection, validateCpe } from "./sunat.js";
 import { saveEvidence, sendEvidence } from "./storage.js";
 import { readReceiptDocument } from "./document-reader.js";
+import { createWorkflowRouter } from './workflow.js';
+import { createFinanceRouter } from './finance.js';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -34,7 +36,10 @@ const dataUpload = multer({
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static("public"));
+app.use('/api',(_req,res,next)=>{res.set('Cache-Control','no-store');next();});
+app.use(express.static("public",{setHeaders(res,filePath){
+  if(filePath.endsWith('sw.js') || filePath.endsWith('index.html'))res.setHeader('Cache-Control','no-cache');
+}}));
 
 const catalogs = {
   clients: { table: "clients", fields: ["name", "ruc", "responsible_person"], required: ["name", "ruc", "responsible_person"] },
@@ -137,10 +142,10 @@ async function getCurrentUser(req) {
 }
 
 const ROLE_MODULES = {
-  ADMIN: ["projects","expenses","advances","clients","clientprojects","profiles","personnel","concepts"],
-  COORDINADOR: ["projects","expenses","advances","clients","clientprojects","personnel"],
-  PRODUCTOR: ["expenses","advances"],
-  "SUB PRODUCTOR": ["expenses","advances"],
+  ADMIN: ["dashboard","finance","projects","expenses","advances","clients","clientprojects","profiles","personnel","concepts"],
+  COORDINADOR: ["dashboard","finance","projects","expenses","advances","clients","clientprojects","personnel"],
+  PRODUCTOR: ["dashboard","expenses","advances"],
+  "SUB PRODUCTOR": ["dashboard","expenses","advances"],
   EJECUTIVO: [],
 };
 
@@ -317,6 +322,24 @@ app.use("/api", requireAuth, (req,res,next)=>{
     return res.status(403).json({ error:"No tienes permiso para realizar esta acción." });
   }
   next();
+});
+
+app.use('/api/workflow', createWorkflowRouter(pool));
+app.use('/api/finance', createFinanceRouter(pool));
+
+// Reject edits before accepting an uploaded replacement. Database triggers provide
+// the final protection if a concurrent review changes the state afterwards.
+app.use('/api', async (req,res,next)=>{
+  const match=req.path.match(/^\/(expenses|advances)\/(\d+)$/);
+  if (!match || !['PUT','DELETE'].includes(req.method)) return next();
+  try {
+    const expense=match[1]==='expenses';
+    const result=await query(expense ? 'SELECT approval_status AS status FROM expense_reports WHERE id=$1' : 'SELECT workflow_status AS status FROM advance_requests WHERE id=$1',[match[2]]);
+    if(result.rows[0] && !(expense ? ['BORRADOR','OBSERVADO'] : ['SOLICITADO']).includes(result.rows[0].status)) {
+      return res.status(409).json({error:expense ? 'La rendición está en revisión o aprobada. Solicita que sea observada antes de editar.' : 'El anticipo aprobado no puede editarse ni eliminarse.'});
+    }
+    next();
+  } catch(error) { dbError(res,error); }
 });
 
 async function syncClientsFromMaster(db) {
@@ -687,10 +710,10 @@ function validateProject(body) {
 }
 
 async function replaceConcepts(client, projectId, conceptIds = []) {
-  await client.query("DELETE FROM project_event_concepts WHERE project_id=$1", [projectId]);
   const ids = [...new Set((conceptIds || []).map(Number).filter((x) => Number.isInteger(x) && x > 0))];
+  await client.query('DELETE FROM project_event_concepts WHERE project_id=$1 AND NOT (concept_id=ANY($2::bigint[]))',[projectId,ids]);
   for (const id of ids) {
-    await client.query("INSERT INTO project_event_concepts (project_id, concept_id) VALUES ($1,$2)", [projectId, id]);
+    await client.query("INSERT INTO project_event_concepts (project_id, concept_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [projectId, id]);
   }
 }
 

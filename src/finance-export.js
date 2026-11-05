@@ -1,5 +1,5 @@
 import PDFDocument from 'pdfkit';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 const amount=value=>value===null || value===undefined ? null : Number(value);
 const money=value=>value===null || value===undefined ? 'Sin definir' : 'S/ '+Number(value).toFixed(2);
@@ -16,14 +16,18 @@ export const summaryLabels={
   pending_reimbursement:'Reembolsos pendientes',budget:'Presupuesto definido',budget_remaining:'Presupuesto menos gastos aprobados',
 };
 
-export function financeWorkbook(data) {
-  const wb=XLSX.utils.book_new();
+export async function financeWorkbook(data) {
+  const wb=new ExcelJS.Workbook();
+  wb.creator='Below Rendiciones';
+  wb.created=new Date(data.generated_at || Date.now());
   const add=(name,rows,widths)=>{
-    const sheet=XLSX.utils.aoa_to_sheet(rows);
-    sheet['!cols']=widths.map(wch=>({wch}));
-    for(const key of Object.keys(sheet)) if(!key.startsWith('!') && sheet[key].t==='n') sheet[key].z='#,##0.00';
-    if(rows.length>1) sheet['!autofilter']={ref:XLSX.utils.encode_range({s:{r:0,c:0},e:{r:rows.length-1,c:rows[0].length-1}})};
-    XLSX.utils.book_append_sheet(wb,sheet,name);
+    const sheet=wb.addWorksheet(name,{views:[{state:'frozen',ySplit:1}]});
+    sheet.columns=widths.map(width=>({width}));
+    // Values are written as plain cells: text supplied by users is never interpreted as a formula.
+    for(const row of rows) sheet.addRow(row.map(value=>value===undefined ? null : value));
+    sheet.getRow(1).font={bold:true};
+    sheet.eachRow(row=>row.eachCell(cell=>{if(typeof cell.value==='number') cell.numFmt='#,##0.00';}));
+    if(rows.length>1) sheet.autoFilter={from:{row:1,column:1},to:{row:rows.length,column:rows[0].length}};
   };
   add('Resumen',[
     ['Liquidación de proyecto','Importe / valor'],['Código',data.project.project_code],['Proyecto',data.project.project_name],
@@ -61,7 +65,7 @@ export function financeWorkbook(data) {
     ['Fecha (Lima)','Concepto','Anterior PEN','Nuevo PEN','Motivo','Responsable'],
     ...data.history.map(h=>[stamp(h.created_at),h.concept_name,amount(h.old_amount),amount(h.new_amount),h.reason,h.actor_name]),
   ],[24,40,22,22,80,32]);
-  return XLSX.write(wb,{type:'buffer',bookType:'xlsx'});
+  return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
 export function financePdf(data) {

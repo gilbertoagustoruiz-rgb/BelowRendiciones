@@ -13,10 +13,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Node 20
+      - name: Node 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
         run: npm ci
@@ -25,3 +25,5 @@ jobs:
         run: npm run check
       - name: Test approval and reconciliation workflows
         run: npm test
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

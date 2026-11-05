@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import express from 'express';
 import crypto from 'node:crypto';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import parsePdf from 'pdf-parse/lib/pdf-parse.js';
 import { PGlite } from '@electric-sql/pglite';
 import { createWorkflowRouter, moneyCents } from '../src/workflow.js';
@@ -276,9 +276,11 @@ test('descargas Excel y PDF incluyen cifras, no convierten referencias en fórmu
   await approveExpense();await action('advances',1,'VINCULAR',1,{expense_id:1});
   const root=base.replace('/workflow','/finance')+'/projects/1';
   let res=await fetch(root+'/report.xlsx');assert.equal(res.status,200);
-  const wb=XLSX.read(Buffer.from(await res.arrayBuffer()),{type:'buffer'});
-  assert.equal(wb.SheetNames.length,7);assert.equal(wb.Sheets.Movimientos.F2.t,'s');assert.equal(wb.Sheets.Movimientos.F2.f,undefined);
-  assert.equal(wb.Sheets.Movimientos.E2.v,5000);assert.equal(wb.Sheets.Rendiciones.I2.v,4350);
+  const wb=new ExcelJS.Workbook();await wb.xlsx.load(Buffer.from(await res.arrayBuffer()));
+  assert.equal(wb.worksheets.length,7);
+  const ref=wb.getWorksheet('Movimientos').getCell('F2');
+  assert.equal(ref.type,ExcelJS.ValueType.String);assert.equal(ref.formula,undefined);
+  assert.equal(wb.getWorksheet('Movimientos').getCell('E2').value,5000);assert.equal(wb.getWorksheet('Rendiciones').getCell('I2').value,4350);
   res=await fetch(root+'/report.pdf');assert.equal(res.status,200);
   const pdf=Buffer.from(await res.arrayBuffer());assert.equal(pdf.subarray(0,5).toString(),'%PDF-');
   // Legacy PDF.js requires an offset-zero typed array when reading pooled Buffers.

@@ -13,6 +13,43 @@ Aplicativo web para gestión de proyectos, conceptos de evento y rendición de g
 - Conceptos de Eventos
 - Presupuesto y liquidación (ADMIN / COORDINADOR)
 
+## Seguridad y operación (v1.9)
+
+### Accesos
+- El PDF de un anticipo (con datos bancarios) solo lo abren el solicitante, ADMIN y COORDINADOR.
+  Los productores ven únicamente anticipos donde figuran como solicitante (ya no se compara por nombre):
+  los anticipos antiguos sin solicitante asignado deben asignarse desde **Editar**.
+- Los productores solo reciben su propio registro de **Personal**.
+- Si un mismo DNI tiene varios perfiles, el login pide elegir con cuál ingresar.
+- Tras 8 intentos fallidos para un DNI (o 40 desde una misma red) el login se bloquea 15 minutos.
+- Las contraseñas nuevas requieren 8 caracteres con letras y números. Las actuales siguen funcionando
+  hasta que se cambien. Cambiar contraseña, perfil o desactivar a una persona cierra sus otras sesiones.
+- No se puede eliminar el propio usuario ni dejar el sistema sin un ADMIN activo.
+- Las sesiones vencidas se eliminan automáticamente.
+
+### Servidor
+- Cabeceras de seguridad (CSP, HSTS en producción, `nosniff`, sin `X-Powered-By`) y bloqueo de
+  operaciones enviadas desde otros sitios. Para aceptar otro dominio propio usa `ALLOWED_ORIGINS`.
+- Los comprobantes y constancias se validan por su contenido real (no por la extensión).
+- Los errores internos no muestran detalles al usuario: devuelven una referencia que aparece en el log.
+- SUNAT tiene un límite de 15 s (`SUNAT_TIMEOUT_MS`); si no responde, la rendición queda en ERROR y se
+  puede volver a validar.
+- El OCR usa el modelo en español incluido en la app (no descarga nada al arrancar) y se reinicia solo si falla.
+- Las importaciones aceptan **.xlsx y .csv** (con coma o punto y coma). El formato **.xls** antiguo ya no es
+  compatible: guardar como .xlsx.
+
+### Base de datos
+- Las migraciones se registran en `schema_migrations` con su huella SHA-256: un reinicio normal no vuelve a
+  ejecutar los SQL, y varias instancias esperan su turno. Al modificar un archivo SQL se aplica automáticamente.
+- Configura `DATABASE_CA_CERT` (o `DATABASE_CA_CERT_PATH`) con el certificado CA de DigitalOcean para verificar
+  el servidor PostgreSQL. Sin él la conexión sigue cifrada, pero sin verificar, y se muestra un aviso en el log.
+
+### Despliegue
+- Node.js 22 o superior. La imagen Docker corre como usuario sin privilegios, no incluye `.env` ni `uploads/`,
+  tiene `HEALTHCHECK` y se apaga ordenadamente (termina las solicitudes en curso) al recibir SIGTERM.
+- `TRUST_PROXY=1` (valor por defecto) es el correcto detrás de DigitalOcean App Platform.
+- CI ejecuta `npm audit --omit=dev --audit-level=high`.
+
 ## Celular y PWA (v1.8)
 
 El frontend adapta los registros a tarjetas con datos principales y **Ver más datos**, navegación
@@ -138,7 +175,7 @@ con motivo registrado, mientras el anticipo siga desembolsado y abierto.
 ### Actualización y verificación
 
 Ejecutar `npm ci`, `npm run check` y `npm test` antes de desplegar.
-Las pruebas usan PostgreSQL integrado (PGlite) con datos ficticios y no necesitan
+Las pruebas (incluidas las de acceso y login de `test/server.test.js`) usan PostgreSQL integrado (PGlite) con datos ficticios y no necesitan
 credenciales ni acceso a la base de producción.
 
 `npm run db:init` y el arranque normal aplican `sql/schema.sql`, después

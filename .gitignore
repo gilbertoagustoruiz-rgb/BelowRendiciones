@@ -4,3 +4,6 @@ uploads/
 .DS_Store
 npm-debug.log*
 tmp/
+.env.*
+!.env.example
+*.traineddata

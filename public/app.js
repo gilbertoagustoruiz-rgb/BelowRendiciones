@@ -62,7 +62,7 @@ async function request(url, options = {}) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 && !url.includes("/auth/")) showAuth();
-    throw new Error(body.error || "No se pudo completar la operación.");
+    throw Object.assign(new Error(body.error || "No se pudo completar la operación."), { status: response.status, body });
   }
   return body;
 }
@@ -660,8 +660,8 @@ function openForm(row=null) {
         {value:"ACTIVO",label:"Activo"},
         {value:"INACTIVO",label:"Inactivo"}
       ],row?.status || "ACTIVO",true),
-      '<div class="field"><label>'+(row ? "Nueva contraseña" : "Contraseña")+'</label><input name="password" type="password" minlength="6" '+(row ? "" : "required")+' autocomplete="new-password" placeholder="'+(row ? "Dejar vacío para mantener la actual" : "Mínimo 6 caracteres")+'"></div>',
-      '<div class="field"><label>'+(row ? "Confirmar nueva contraseña" : "Confirmar contraseña")+'</label><input name="password_confirm" type="password" minlength="6" '+(row ? "" : "required")+' autocomplete="new-password"></div>'
+      '<div class="field"><label>'+(row ? "Nueva contraseña" : "Contraseña")+'</label><input name="password" type="password" minlength="8" '+(row ? "" : "required")+' autocomplete="new-password" placeholder="'+(row ? "Dejar vacío para mantener la actual" : "Mínimo 8, con letras y números")+'"></div>',
+      '<div class="field"><label>'+(row ? "Confirmar nueva contraseña" : "Confirmar contraseña")+'</label><input name="password_confirm" type="password" minlength="8" '+(row ? "" : "required")+' autocomplete="new-password"></div>'
     ].join("");
     showHelp(row
       ? "La contraseña actual nunca se muestra. Si dejas los campos de nueva contraseña vacíos, se conserva la existente."
@@ -947,13 +947,27 @@ $("#loginForm")?.addEventListener("submit",async(event)=>{
   const loginForm=event.currentTarget;
   try {
     const data=Object.fromEntries(new FormData(loginForm).entries());
+    if(!data.profile_id) delete data.profile_id;
     const user=await request(API+"/auth/login",{method:"POST",body:JSON.stringify(data)});
     loginForm.reset();
+    $('#loginProfileField').classList.add('hidden');
+    $('#loginProfileField select').required=false;
     showApp(user);
     await loadCurrent();
   } catch(error) {
+    if(error.body?.code==='PROFILE_REQUIRED'){
+      // Same document registered with several profiles: let the person choose.
+      const field=$('#loginProfileField'),select=field.querySelector('select');
+      select.innerHTML='<option value="">Seleccionar perfil…</option>'+error.body.profiles.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+      select.required=true;field.classList.remove('hidden');select.focus();
+    }
     toast(error.message,true);
   }
+});
+
+$("#loginForm")?.elements.document_number?.addEventListener("input",()=>{
+  const field=$('#loginProfileField');
+  if(field && !field.classList.contains('hidden')){field.classList.add('hidden');const select=field.querySelector('select');select.required=false;select.innerHTML='';}
 });
 
 $("#bootstrapForm")?.addEventListener("submit",async(event)=>{

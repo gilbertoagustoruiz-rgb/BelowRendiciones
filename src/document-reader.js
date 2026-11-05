@@ -1,7 +1,18 @@
 import pdf from "pdf-parse";
 import { createWorker } from "tesseract.js";
+import path from "node:path";
+import { createRequire } from "node:module";
 
 let workerPromise;
+
+function bundledLangPath() {
+  try {
+    const require = createRequire(import.meta.url);
+    return path.join(path.dirname(require.resolve("@tesseract.js-data/spa/package.json")), "4.0.0_best_int");
+  } catch {
+    return undefined; // falls back to tesseract.js's default CDN
+  }
+}
 
 function normalizeText(text="") {
   return String(text)
@@ -129,11 +140,39 @@ export function parseReceiptText(rawText) {
   };
 }
 
+const OCR_TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS || 45000);
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); timer.unref?.(); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function getWorker() {
   if (!workerPromise) {
-    workerPromise=createWorker("spa");
+    // The Spanish model ships with the app (@tesseract.js-data/spa), so OCR does not depend
+    // on downloading it from a CDN in production. TESSERACT_LANG_PATH can override it.
+    const options = { langPath: process.env.TESSERACT_LANG_PATH || bundledLangPath(), gzip: true, cacheMethod: "none" };
+    workerPromise = createWorker("spa", 1, options).catch((error) => {
+      workerPromise = null;
+      throw error;
+    });
   }
   return workerPromise;
+}
+
+async function resetWorker() {
+  const current = workerPromise;
+  workerPromise = null;
+  if (current) {
+    try { await (await current).terminate(); } catch { /* already gone */ }
+  }
+}
+
+export async function closeDocumentReader() {
+  await resetWorker();
 }
 
 export async function readReceiptDocument(file) {
@@ -144,7 +183,7 @@ export async function readReceiptDocument(file) {
   let confidence=null;
 
   if (file.mimetype === "application/pdf") {
-    const data=await pdf(file.buffer);
+    const data=await withTimeout(pdf(file.buffer),OCR_TIMEOUT_MS,"La lectura del PDF tardó demasiado.");
     text=data.text || "";
     source="PDF_TEXT";
 
@@ -157,8 +196,15 @@ export async function readReceiptDocument(file) {
       };
     }
   } else {
-    const worker=await getWorker();
-    const result=await worker.recognize(file.buffer);
+    let result;
+    try {
+      const worker=await getWorker();
+      result=await withTimeout(worker.recognize(file.buffer),OCR_TIMEOUT_MS,"La lectura de la imagen tardó demasiado.");
+    } catch (error) {
+      // A stuck or crashed worker would break every later scan: start a fresh one next time.
+      await resetWorker();
+      throw error;
+    }
     text=result?.data?.text || "";
     confidence=Number.isFinite(result?.data?.confidence) ? result.data.confidence : null;
     source="OCR_IMAGE";

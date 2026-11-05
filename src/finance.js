@@ -132,7 +132,7 @@ export function createFinanceRouter(pool) {
   router.get('/projects/:id/report.xlsx',route(async(req,res)=>{
     const data=await snapshot(req.params.id);
     res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-      .set('Content-Disposition',`attachment; filename="liquidacion-proyecto-${data.project.id}.xlsx"`).send(financeWorkbook(data));
+      .set('Content-Disposition',`attachment; filename="liquidacion-proyecto-${data.project.id}.xlsx"`).send(await financeWorkbook(data));
   }));
   return router;
 }

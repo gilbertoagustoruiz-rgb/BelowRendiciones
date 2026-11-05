@@ -1,28 +1,35 @@
 import express from "express";
-import cors from "cors";
+import helmet from "helmet";
 import multer from "multer";
 import "dotenv/config";
 import PDFDocument from "pdfkit";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
-import * as XLSX from "xlsx";
+import { pathToFileURL } from "node:url";
 import { ensureSchema } from "./schema-init.js";
 import { query, pool } from "./db.js";
 import { isSunatConfigured, mapSunatStatus, testSunatConnection, validateCpe } from "./sunat.js";
-import { saveEvidence, sendEvidence } from "./storage.js";
-import { readReceiptDocument } from "./document-reader.js";
+import { saveEvidence, sendEvidence, removeEvidence } from "./storage.js";
+import { readReceiptDocument, closeDocumentReader } from "./document-reader.js";
 import { createWorkflowRouter } from './workflow.js';
 import { createFinanceRouter } from './finance.js';
+import { createLoginLimiter, sameOriginGuard, detectEvidenceType, passwordError, contentDisposition } from "./security.js";
+import { readSpreadsheetRows, ImportFormatError } from "./spreadsheet-import.js";
 
-const app = express();
+export const app = express();
 const PORT = Number(process.env.PORT || 3000);
+const PRODUCTION = process.env.NODE_ENV === "production";
+const SESSION_DAYS = 7;
+export const loginLimiter = createLoginLimiter();
+// Compared when the document does not exist, so response time does not reveal valid users.
+const DUMMY_HASH = bcrypt.hashSync("below-rendiciones-dummy", 10);
 
+const EVIDENCE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 30 },
   fileFilter: (_req, file, cb) => {
-    const allowed = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
-    if (!allowed.includes(file.mimetype)) {
+    if (!EVIDENCE_TYPES.includes(file.mimetype)) {
       return cb(new Error("Solo se permiten PDF, JPG, PNG o WEBP."));
     }
     cb(null, true);
@@ -31,11 +38,50 @@ const upload = multer({
 
 const dataUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 5 },
 });
 
-app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+/** Confirms the uploaded file really is a PDF/JPG/PNG/WEBP and records its true type. */
+function checkEvidenceFile(file) {
+  const detected = detectEvidenceType(file?.buffer);
+  if (!detected) throw Object.assign(new Error("El archivo no es un PDF, JPG, PNG o WEBP válido."), { status: 400 });
+  file.mimetype = detected;
+  file.originalname = String(file.originalname || "comprobante").slice(0, 200);
+  return file;
+}
+
+function parseTrustProxy(value) {
+  if (value === undefined || value === "") return 1; // DigitalOcean / most PaaS: one proxy in front
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return /^\d+$/.test(value) ? Number(value) : value;
+}
+
+app.disable("x-powered-by");
+app.set("trust proxy", parseTrustProxy(process.env.TRUST_PROXY));
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      fontSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"],
+      workerSrc: ["'self'"],
+      manifestSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: PRODUCTION ? [] : null,
+    },
+  },
+  strictTransportSecurity: PRODUCTION ? { maxAge: 31536000 } : false,
+  crossOriginEmbedderPolicy: false,
+}));
+app.use("/api", sameOriginGuard(String(process.env.ALLOWED_ORIGINS || "").split(",")));
+app.use(express.json({ limit: "1mb" }));
 app.use('/api',(_req,res,next)=>{res.set('Cache-Control','no-store');next();});
 app.use(express.static("public",{setHeaders(res,filePath){
   if(filePath.endsWith('sw.js') || filePath.endsWith('index.html'))res.setHeader('Cache-Control','no-cache');
@@ -65,11 +111,20 @@ function identityError(type, body) {
 }
 
 function dbError(res, error) {
+  if (res.headersSent) { console.error(error); return; }
+  if (error.status && error.status < 500) return res.status(error.status).json({ error: error.message });
   if (error.code === "23505") return res.status(409).json({ error: "El registro ya existe. Revisa RUC, DNI, código o comprobante." });
   if (error.code === "23503") return res.status(409).json({ error: "El registro está relacionado con otro módulo y no puede eliminarse." });
+  // Workflow triggers raise 23514 without a constraint name and a message written for users.
+  if (error.code === "23514" && !error.constraint && error.where) return res.status(409).json({ error: error.message });
   if (error.code === "23514") return res.status(400).json({ error: "Uno de los valores no cumple las reglas requeridas." });
-  console.error(error);
-  return res.status(500).json({ error: error.message || "Error interno del servidor." });
+  if (error.code === "22P02" || error.code === "22007" || error.code === "22008" || error.code === "22003") {
+    return res.status(400).json({ error: "Uno de los valores tiene un formato inválido." });
+  }
+  // Internal details stay in the server log; the user gets a reference to report.
+  const ref = crypto.randomBytes(4).toString("hex");
+  console.error("[error " + ref + "]", error);
+  return res.status(500).json({ error: "Error interno del servidor (ref. " + ref + "). Inténtalo de nuevo o informa al administrador." });
 }
 
 app.get("/api/health", async (_req, res) => {
@@ -77,7 +132,8 @@ app.get("/api/health", async (_req, res) => {
     await query("SELECT 1");
     res.json({ ok: true, database: "connected", sunatConfigured: isSunatConfigured() });
   } catch (error) {
-    res.status(503).json({ ok: false, database: "disconnected", error: error.message });
+    console.error("[health]", error.message);
+    res.status(503).json({ ok: false, database: "disconnected" });
   }
 });
 
@@ -97,8 +153,8 @@ function hashSessionToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-function setSessionCookie(req, res, token, maxAgeSeconds=60*60*24*7) {
-  const secure = req.secure || req.get("x-forwarded-proto") === "https";
+function setSessionCookie(req, res, token, maxAgeSeconds=60*60*24*SESSION_DAYS) {
+  const secure = PRODUCTION || req.secure;
   const attrs = [
     "below_session="+encodeURIComponent(token),
     "HttpOnly",
@@ -111,7 +167,7 @@ function setSessionCookie(req, res, token, maxAgeSeconds=60*60*24*7) {
 }
 
 function clearSessionCookie(req, res) {
-  const secure = req.secure || req.get("x-forwarded-proto") === "https";
+  const secure = PRODUCTION || req.secure;
   const attrs = [
     "below_session=",
     "HttpOnly",
@@ -163,52 +219,68 @@ app.get("/api/auth/status", async (_req,res)=>{
   }
 });
 
+async function createSession(db, personnelId) {
+  const token=crypto.randomBytes(32).toString("hex");
+  await db.query(
+    "INSERT INTO auth_sessions (personnel_id,token_hash,expires_at) VALUES ($1,$2,NOW()+make_interval(days => $3))",
+    [personnelId,hashSessionToken(token),SESSION_DAYS]
+  );
+  return token;
+}
+
+export async function purgeExpiredSessions(db=pool) {
+  const result=await db.query("DELETE FROM auth_sessions WHERE expires_at <= NOW()");
+  return result.rowCount || 0;
+}
+
 app.post("/api/auth/bootstrap", async (req,res)=>{
+  const missing=requiredError(req.body,["full_name","document_number","password"]);
+  if (missing) return res.status(400).json({ error:missing });
+  if (!/^[A-Za-z0-9-]{6,20}$/.test(String(req.body.document_number).trim())) {
+    return res.status(400).json({ error:"DNI / Pasaporte inválido." });
+  }
+  const weak=passwordError(req.body.password);
+  if (weak) return res.status(400).json({ error:weak });
+
+  const db=await pool.connect();
   try {
-    const admins=await query(
+    await db.query("BEGIN");
+    // Serialises simultaneous bootstrap attempts so only one initial ADMIN can exist.
+    await db.query("SELECT pg_advisory_xact_lock(724190312)");
+    const admins=await db.query(
       `SELECT COUNT(*)::int AS total
        FROM personnel per
        JOIN profiles p ON p.id=per.profile_id
        WHERE p.name='ADMIN'`
     );
     if (Number(admins.rows[0].total) > 0) {
+      await db.query("ROLLBACK");
       return res.status(409).json({ error:"El administrador inicial ya fue creado." });
     }
-
-    const missing=requiredError(req.body,["full_name","document_number","password"]);
-    if (missing) return res.status(400).json({ error:missing });
-    if (!/^[A-Za-z0-9-]{6,20}$/.test(String(req.body.document_number).trim())) {
-      return res.status(400).json({ error:"DNI / Pasaporte inválido." });
-    }
-    if (String(req.body.password).length < 6) {
-      return res.status(400).json({ error:"La contraseña debe tener al menos 6 caracteres." });
-    }
-
-    const profile=await query("SELECT id FROM profiles WHERE name='ADMIN'");
-    if (!profile.rows[0]) return res.status(500).json({ error:"Perfil ADMIN no disponible." });
+    const profile=await db.query("SELECT id FROM profiles WHERE name='ADMIN'");
+    if (!profile.rows[0]) throw new Error("Perfil ADMIN no disponible.");
 
     const hash=await bcrypt.hash(String(req.body.password),12);
-    const created=await query(
+    const created=await db.query(
       `INSERT INTO personnel (full_name,document_number,profile_id,password_hash,status)
        VALUES ($1,$2,$3,$4,'ACTIVO')
        RETURNING id`,
       [
-        String(req.body.full_name).trim(),
+        String(req.body.full_name).trim().slice(0,180),
         String(req.body.document_number).trim().toUpperCase(),
         profile.rows[0].id,
         hash,
       ]
     );
-
-    const token=crypto.randomBytes(32).toString("hex");
-    await query(
-      "INSERT INTO auth_sessions (personnel_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '7 days')",
-      [created.rows[0].id,hashSessionToken(token)]
-    );
+    const token=await createSession(db,created.rows[0].id);
+    await db.query("COMMIT");
     setSessionCookie(req,res,token);
     res.status(201).json({ ok:true });
   } catch(error) {
+    await db.query("ROLLBACK").catch(()=>{});
     dbError(res,error);
+  } finally {
+    db.release();
   }
 });
 
@@ -217,28 +289,54 @@ app.post("/api/auth/login", async (req,res)=>{
     const missing=requiredError(req.body,["document_number","password"]);
     if (missing) return res.status(400).json({ error:missing });
 
+    const documentNumber=String(req.body.document_number).trim().slice(0,20);
+    const password=String(req.body.password).slice(0,200);
+    const wait=loginLimiter.blockedFor(req.ip,documentNumber);
+    if (wait) {
+      res.set("Retry-After",String(wait));
+      return res.status(429).json({ error:"Demasiados intentos fallidos. Espera "+Math.ceil(wait/60)+" minuto(s) e inténtalo de nuevo." });
+    }
+
     const result=await query(
       `SELECT per.id, per.full_name, per.document_number, per.password_hash, per.status,
               p.id AS profile_id, p.name AS profile
        FROM personnel per
        JOIN profiles p ON p.id=per.profile_id
        WHERE UPPER(per.document_number)=UPPER($1)
-       LIMIT 1`,
-      [String(req.body.document_number).trim()]
+         AND per.status='ACTIVO'
+         AND per.password_hash IS NOT NULL
+       ORDER BY p.name, per.id`,
+      [documentNumber]
     );
-    const user=result.rows[0];
-    if (!user || !user.password_hash || user.status !== "ACTIVO") {
+
+    // The same document may be registered with several profiles: check them all and
+    // never pick one at random.
+    const matches=[];
+    for (const candidate of result.rows) {
+      if (await bcrypt.compare(password,candidate.password_hash)) matches.push(candidate);
+    }
+    if (!result.rows.length) await bcrypt.compare(password,DUMMY_HASH);
+    if (!matches.length) {
+      loginLimiter.fail(req.ip,documentNumber);
       return res.status(401).json({ error:"Documento o contraseña incorrectos." });
     }
 
-    const ok=await bcrypt.compare(String(req.body.password),user.password_hash);
-    if (!ok) return res.status(401).json({ error:"Documento o contraseña incorrectos." });
+    let user=matches[0];
+    if (matches.length > 1) {
+      user=matches.find((m)=>String(m.profile_id)===String(req.body.profile_id || ""));
+      if (!user) {
+        return res.status(409).json({
+          error:"Tu documento tiene más de un perfil. Elige con cuál deseas ingresar.",
+          code:"PROFILE_REQUIRED",
+          profiles:matches.map((m)=>({ id:m.profile_id, name:m.profile })),
+        });
+      }
+    }
+    loginLimiter.succeed(req.ip,documentNumber);
 
-    const token=crypto.randomBytes(32).toString("hex");
-    await query(
-      "INSERT INTO auth_sessions (personnel_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '7 days')",
-      [user.id,hashSessionToken(token)]
-    );
+    const token=await createSession(pool,user.id);
+    // Occasional housekeeping so the sessions table does not grow forever.
+    if (Math.random() < 0.05) purgeExpiredSessions().catch((error)=>console.error("[sesiones]",error.message));
     setSessionCookie(req,res,token);
     res.json({
       id:user.id,
@@ -324,8 +422,11 @@ app.use("/api", requireAuth, (req,res,next)=>{
   next();
 });
 
-app.use('/api/workflow', createWorkflowRouter(pool));
-app.use('/api/finance', createFinanceRouter(pool));
+// Built on first use so the app always works with the current pool (tests inject one).
+let routers = null;
+const lazyRouters = () => routers ||= { workflow: createWorkflowRouter(pool), finance: createFinanceRouter(pool) };
+app.use('/api/workflow', (req,res,next) => lazyRouters().workflow(req,res,next));
+app.use('/api/finance', (req,res,next) => lazyRouters().finance(req,res,next));
 
 // Reject edits before accepting an uploaded replacement. Database triggers provide
 // the final protection if a concurrent review changes the state afterwards.
@@ -355,10 +456,7 @@ async function syncClientsFromMaster(db) {
 app.post("/api/clients/import", dataUpload.single("file"), async (req,res) => {
   if (!req.file) return res.status(400).json({error:"Selecciona un Excel o CSV."});
   try {
-    const workbook=XLSX.read(req.file.buffer,{type:"buffer"});
-    const sheet=workbook.Sheets[workbook.SheetNames[0]];
-    if(!sheet) return res.status(400).json({error:"El archivo no tiene hojas."});
-    const rows=XLSX.utils.sheet_to_json(sheet,{defval:"",raw:false});
+    const rows=await readSpreadsheetRows(req.file);
     const normalize=value=>String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim().toUpperCase().replace(/\s+/g," ");
     const pick=(row,aliases)=>Object.entries(row).find(([key])=>aliases.includes(normalize(key)))?.[1]?.toString().trim()||"";
     const valid=new Map(),errors=[];
@@ -387,16 +485,16 @@ app.post("/api/clients/import", dataUpload.single("file"), async (req,res) => {
       await db.query("COMMIT");
     }catch(error){await db.query("ROLLBACK");throw error;}finally{db.release();}
     res.json({ok:true,total:rows.length,inserted,updated,skipped:rows.length-valid.size,errors:errors.slice(0,100)});
-  }catch(error){console.error(error);res.status(400).json({error:"No se pudo importar el archivo. Revisa el formato y los datos."});}
+  }catch(error){
+    if(error instanceof ImportFormatError) return res.status(400).json({error:error.message});
+    console.error(error);res.status(400).json({error:"No se pudo importar el archivo. Revisa el formato y los datos."});
+  }
 });
 
 app.post("/api/clientprojects/import", dataUpload.single("file"), async (req,res) => {
   if (!req.file) return res.status(400).json({error:"Selecciona un archivo Excel o CSV."});
   try {
-    const workbook=XLSX.read(req.file.buffer,{type:"buffer"});
-    const sheet=workbook.Sheets[workbook.SheetNames[0]];
-    if (!sheet) return res.status(400).json({error:"El archivo no contiene hojas."});
-    const rows=XLSX.utils.sheet_to_json(sheet,{defval:"",raw:false});
+    const rows=await readSpreadsheetRows(req.file);
     const normalize=s=>String(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim().toUpperCase().replace(/\s+/g," ");
     const pick=(row,aliases)=>Object.entries(row).find(([key])=>aliases.includes(normalize(key)))?.[1]?.toString().trim()||"";
     const records=rows.map((row,index)=>({
@@ -442,7 +540,10 @@ app.post("/api/clientprojects/import", dataUpload.single("file"), async (req,res
     } catch(error) { await client.query("ROLLBACK");throw error; }
     finally { client.release(); }
     res.json({ok:true,total:records.length,inserted,updated,skipped:records.length-valid.size,errors:errors.slice(0,100)});
-  } catch(error) { console.error(error);res.status(400).json({error:"Error al importar. Verifica columnas RUC, CLIENTE, NOMBRE DEL PROYECTO y CODIGO DEL PROYECTO."}); }
+  } catch(error) {
+    if(error instanceof ImportFormatError) return res.status(400).json({error:error.message});
+    console.error(error);res.status(400).json({error:"Error al importar. Verifica columnas RUC, CLIENTE, NOMBRE DEL PROYECTO y CODIGO DEL PROYECTO."});
+  }
 });
 
 app.get("/api/:type", async (req, res, next) => {
@@ -516,8 +617,17 @@ app.delete("/api/:type/:id", async (req, res, next) => {
   } catch (error) { dbError(res, error); }
 });
 
-app.get("/api/personnel", async (_req, res) => {
+app.get("/api/personnel", async (req, res) => {
   try {
+    // Productores only need their own record (for their forms); never the whole staff list.
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const own = await query(
+        `SELECT per.id, per.full_name, per.document_number, per.profile_id, p.name AS profile, per.status
+         FROM personnel per JOIN profiles p ON p.id=per.profile_id WHERE per.id=$1`,
+        [req.user.id]
+      );
+      return res.json(own.rows);
+    }
     const result = await query(
       `SELECT per.id, per.full_name, per.document_number, per.profile_id,
               p.name AS profile, per.status,
@@ -544,12 +654,8 @@ function validatePersonnel(body, editing=false) {
   if (!/^[A-Za-z0-9-]{6,20}$/.test(String(body.document_number).trim())) {
     return "DNI / Pasaporte debe tener entre 6 y 20 caracteres alfanuméricos.";
   }
-  if (!editing && (!body.password || String(body.password).length < 6)) {
-    return "La contraseña debe tener al menos 6 caracteres.";
-  }
-  if (body.password && String(body.password).length < 6) {
-    return "La nueva contraseña debe tener al menos 6 caracteres.";
-  }
+  if (String(body.full_name).trim().length > 180) return "El nombre no puede superar 180 caracteres.";
+  if (!editing || body.password) return passwordError(body.password);
   return null;
 }
 
@@ -606,6 +712,11 @@ app.put("/api/personnel/:id", async (req, res) => {
     if (req.user.profile === "COORDINADOR" && ["ADMIN","COORDINADOR"].includes(current.rows[0].current_profile)) {
       return res.status(403).json({ error: "El Coordinador no puede modificar usuarios ADMIN o COORDINADOR." });
     }
+    const losesAdmin = current.rows[0].current_profile === "ADMIN" &&
+      (profile.rows[0].name !== "ADMIN" || String(req.body.status) !== "ACTIVO");
+    if (losesAdmin && await activeAdminCount(req.params.id) === 0) {
+      return res.status(409).json({ error: "Debe quedar al menos un ADMIN activo." });
+    }
 
     let passwordHash = null;
     if (req.body.password) {
@@ -633,14 +744,40 @@ app.put("/api/personnel/:id", async (req, res) => {
         req.params.id,
       ]
     );
+    // A new password, a different profile or deactivation closes that person's other sessions.
+    const credentialsChanged = Boolean(passwordHash) || String(req.body.status) !== "ACTIVO" ||
+      String(profile.rows[0].name) !== String(current.rows[0].current_profile);
+    if (credentialsChanged) {
+      const currentToken = parseCookies(req).below_session || "";
+      await query("DELETE FROM auth_sessions WHERE personnel_id=$1 AND token_hash<>$2", [req.params.id, hashSessionToken(currentToken)]);
+    }
     res.json(result.rows[0]);
   } catch (error) {
     dbError(res, error);
   }
 });
 
+async function activeAdminCount(excludingId) {
+  const result = await query(
+    `SELECT COUNT(*)::int AS total FROM personnel per JOIN profiles p ON p.id=per.profile_id
+     WHERE p.name='ADMIN' AND per.status='ACTIVO' AND per.password_hash IS NOT NULL AND per.id<>$1`,
+    [excludingId]
+  );
+  return Number(result.rows[0].total);
+}
+
 app.delete("/api/personnel/:id", async (req, res) => {
   try {
+    if (String(req.params.id) === String(req.user.id)) {
+      return res.status(409).json({ error: "No puedes eliminar tu propio usuario." });
+    }
+    const target = await query(
+      `SELECT p.name AS profile FROM personnel per JOIN profiles p ON p.id=per.profile_id WHERE per.id=$1`,
+      [req.params.id]
+    );
+    if (target.rows[0]?.profile === "ADMIN" && await activeAdminCount(req.params.id) === 0) {
+      return res.status(409).json({ error: "Debe quedar al menos un ADMIN activo." });
+    }
     if (req.user.profile === "COORDINADOR") {
       const target=await query(
         `SELECT p.name AS profile
@@ -858,6 +995,12 @@ function validateExpenseInput(body) {
   return null;
 }
 
+/** Removes a file uploaded during a request whose database change failed. */
+async function discardEvidence(saved) {
+  try { await removeEvidence(saved); }
+  catch (error) { console.error("[archivos] No se pudo limpiar " + saved.key + ":", error.message); }
+}
+
 app.get("/api/sunat/status", async (req, res) => {
   if (!["ADMIN","COORDINADOR"].includes(req.user.profile)) {
     return res.status(403).json({ error: "No tienes permiso para revisar la configuración SUNAT." });
@@ -935,6 +1078,10 @@ app.post("/api/expenses/scan", upload.single("document"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Debes adjuntar un PDF o foto del comprobante." });
 
   try {
+    checkEvidenceFile(req.file);
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+
+  try {
     const result = await readReceiptDocument(req.file);
     res.json(result);
   } catch (error) {
@@ -948,7 +1095,9 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
   if (validation) return res.status(400).json({ error: validation });
   if (!req.file) return res.status(400).json({ error: "Debes adjuntar el PDF o foto del comprobante." });
 
+  let stored = null;
   try {
+    checkEvidenceFile(req.file);
     const projectCheck = await query(
       "SELECT id, producer_id, subproducer_id FROM projects WHERE id=$1",
       [req.body.project_id]
@@ -972,7 +1121,7 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
       return res.status(400).json({ error: "El concepto seleccionado no está asignado a este proyecto." });
     }
 
-    const stored = await saveEvidence(req.file);
+    stored = await saveEvidence(req.file);
     const inserted = await query(
       `INSERT INTO expense_reports
        (project_id, concept_id, producer_id, document_type, issuer_ruc, series,
@@ -988,17 +1137,23 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
       ]
     );
 
+    stored = null; // now referenced by the database row
     const validationResult = await runSunatValidation(inserted.rows[0].id);
     const finalRow = await query(expenseSelect + " WHERE er.id=$1", [inserted.rows[0].id]);
     res.status(201).json({ row: finalRow.rows[0], validation: validationResult });
-  } catch (error) { dbError(res, error); }
+  } catch (error) {
+    if (stored) await discardEvidence(stored);
+    dbError(res, error);
+  }
 });
 
 app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
   const validation = validateExpenseInput(req.body);
   if (validation) return res.status(400).json({ error: validation });
 
+  let stored = null;
   try {
+    if (req.file) checkEvidenceFile(req.file);
     const current = await query("SELECT * FROM expense_reports WHERE id=$1", [req.params.id]);
     if (!current.rows[0]) return res.status(404).json({ error: "Rendición no encontrada." });
     if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile) && Number(current.rows[0].producer_id) !== Number(req.user.id)) {
@@ -1034,7 +1189,7 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
     let fileKey = current.rows[0].file_key;
 
     if (req.file) {
-      const stored = await saveEvidence(req.file);
+      stored = await saveEvidence(req.file);
       fileName = req.file.originalname;
       fileMime = req.file.mimetype;
       fileStorage = stored.storage;
@@ -1083,10 +1238,13 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
       ]
     );
 
+    // The previous receipt is kept in storage on purpose: it is part of the audit trail.
+    stored = null;
     const validationResult = await runSunatValidation(req.params.id);
     const finalRow = await query(expenseSelect + " WHERE er.id=$1", [req.params.id]);
     res.json({ row: finalRow.rows[0], validation: validationResult });
   } catch (error) {
+    if (stored) await discardEvidence(stored);
     dbError(res, error);
   }
 });
@@ -1183,8 +1341,8 @@ app.get("/api/advances", async (req, res) => {
     const restricted = ["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile);
     const result = restricted
       ? await query(
-          advanceRequestSelect + " WHERE ar.applicant_personnel_id=$1 OR (ar.applicant_personnel_id IS NULL AND UPPER(ar.applicant_name)=UPPER($2)) ORDER BY ar.id DESC",
-          [req.user.id, req.user.full_name]
+          advanceRequestSelect + " WHERE ar.applicant_personnel_id=$1 ORDER BY ar.id DESC",
+          [req.user.id]
         )
       : await query(advanceRequestSelect + " ORDER BY ar.id DESC");
     res.json({ rows: result.rows });
@@ -1236,11 +1394,7 @@ app.put("/api/advances/:id", async (req, res) => {
     const current=await query("SELECT * FROM advance_requests WHERE id=$1",[req.params.id]);
     if (!current.rows[0]) return res.status(404).json({ error:"Anticipo no encontrado." });
     if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
-      const owner=Number(current.rows[0].applicant_personnel_id);
-      if (owner && owner!==Number(req.user.id)) {
-        return res.status(403).json({ error:"No puedes editar este anticipo." });
-      }
-      if (!owner && String(current.rows[0].applicant_name).toUpperCase()!==String(req.user.full_name).toUpperCase()) {
+      if (Number(current.rows[0].applicant_personnel_id)!==Number(req.user.id)) {
         return res.status(403).json({ error:"No puedes editar este anticipo." });
       }
       req.body.applicant_name=req.user.full_name;
@@ -1290,9 +1444,7 @@ app.delete("/api/advances/:id", async (req, res) => {
     if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
       const current=await query("SELECT applicant_personnel_id, applicant_name FROM advance_requests WHERE id=$1",[req.params.id]);
       if (!current.rows[0]) return res.status(404).json({ error:"Anticipo no encontrado." });
-      const owner=Number(current.rows[0].applicant_personnel_id);
-      if ((owner && owner!==Number(req.user.id)) ||
-          (!owner && String(current.rows[0].applicant_name).toUpperCase()!==String(req.user.full_name).toUpperCase())) {
+      if (Number(current.rows[0].applicant_personnel_id)!==Number(req.user.id)) {
         return res.status(403).json({ error:"No puedes eliminar este anticipo." });
       }
     }
@@ -1323,15 +1475,16 @@ app.get("/api/advances/:id/pdf", async (req, res) => {
     const result = await query(advanceRequestSelect + " WHERE ar.id=$1", [req.params.id]);
     const row = result.rows[0];
     if (!row) return res.status(404).json({ error: "Anticipo no encontrado." });
+    // The PDF holds bank details: only reviewers and the applicant may open it.
+    if (!["ADMIN","COORDINADOR"].includes(req.user.profile) && Number(row.applicant_personnel_id)!==Number(req.user.id)) {
+      return res.status(404).json({ error: "Anticipo no encontrado." });
+    }
 
     const doc = new PDFDocument({ size: "A4", margin: 40 });
     const filename = "anticipo-" + String(row.project_code || row.id).replace(/[^A-Za-z0-9_-]/g, "_") + ".pdf";
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      (req.query.download === "1" ? "attachment" : "inline") + '; filename="' + filename + '"'
-    );
+    res.setHeader("Content-Disposition", contentDisposition(req.query.download === "1" ? "attachment" : "inline", filename));
 
     doc.pipe(res);
 
@@ -1395,24 +1548,62 @@ app.get("/api/advances/:id/pdf", async (req, res) => {
 app.use((error, _req, res, next) => {
   if (!error) return next();
   if (error instanceof multer.MulterError) {
-    return res.status(400).json({ error: error.code === "LIMIT_FILE_SIZE" ? "El archivo supera 10 MB." : error.message });
+    const messages = {
+      LIMIT_FILE_SIZE: "El archivo supera el tamaño máximo permitido.",
+      LIMIT_FILE_COUNT: "Adjunta un solo archivo.",
+      LIMIT_UNEXPECTED_FILE: "Adjunta un solo archivo en el campo indicado.",
+    };
+    return res.status(400).json({ error: messages[error.code] || "No se pudo recibir el archivo." });
   }
   if (error.message?.includes("Solo se permiten")) return res.status(400).json({ error: error.message });
-  next(error);
+  if (error.type === "entity.parse.failed") return res.status(400).json({ error: "Los datos enviados no tienen un formato válido." });
+  if (error.type === "entity.too.large") return res.status(413).json({ error: "Los datos enviados son demasiado grandes." });
+  return dbError(res, error);
 });
 
 app.use("/api", (_req, res) => res.status(404).json({ error: "Ruta no encontrada." }));
 app.get("*", (_req, res) => res.sendFile("index.html", { root: "public" }));
 
-async function start() {
+export async function start() {
   try {
     await ensureSchema();
-    app.listen(PORT, () => console.log("Below Rendiciones activo en puerto " + PORT));
   } catch (error) {
     console.error("No se pudo inicializar la base de datos:");
     console.error(error);
     process.exit(1);
   }
+
+  const server = app.listen(PORT, () => console.log("Below Rendiciones activo en puerto " + PORT));
+  server.headersTimeout = 65_000;
+  server.requestTimeout = 120_000;
+
+  const cleanup = setInterval(() => {
+    purgeExpiredSessions()
+      .then((count) => { if (count) console.log("[sesiones] Eliminadas " + count + " sesiones vencidas."); })
+      .catch((error) => console.error("[sesiones]", error.message));
+  }, 6 * 60 * 60 * 1000);
+  cleanup.unref();
+  purgeExpiredSessions().catch(() => {});
+
+  let stopping = false;
+  const shutdown = (signal) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(signal + " recibido: cerrando sin cortar solicitudes en curso…");
+    const force = setTimeout(() => process.exit(1), 25_000);
+    force.unref();
+    server.close(async () => {
+      await Promise.allSettled([pool.end(), closeDocumentReader()]);
+      process.exit(0);
+    });
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  return server;
 }
 
-start();
+process.on("unhandledRejection", (error) => console.error("[unhandledRejection]", error));
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  start();
+}

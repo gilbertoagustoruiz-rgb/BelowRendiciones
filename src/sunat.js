@@ -1,6 +1,19 @@
 import "dotenv/config";
 
 let tokenCache = null;
+const SUNAT_TIMEOUT_MS = Number(process.env.SUNAT_TIMEOUT_MS || 15000);
+
+/** fetch with a hard time limit: SUNAT outages must not leave requests hanging. */
+async function sunatFetch(url, options) {
+  try {
+    return await fetch(url, { ...options, signal: AbortSignal.timeout(SUNAT_TIMEOUT_MS) });
+  } catch (error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      throw new Error("SUNAT no respondió a tiempo. Vuelve a validar más tarde.");
+    }
+    throw new Error("No se pudo conectar con SUNAT. Vuelve a validar más tarde.");
+  }
+}
 
 export function isSunatConfigured() {
   return Boolean(
@@ -31,7 +44,7 @@ async function getSunatToken() {
     client_secret: clientSecret,
   });
 
-  const response = await fetch(url, {
+  const response = await sunatFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -125,7 +138,7 @@ export async function validateCpe(expense) {
     monto: Number(expense.amount),
   };
 
-  const response = await fetch(url, {
+  const response = await sunatFetch(url, {
     method: "POST",
     headers: {
       Authorization: "Bearer " + token,

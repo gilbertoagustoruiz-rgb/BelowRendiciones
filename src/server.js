@@ -114,7 +114,8 @@ function dbError(res, error) {
   if (res.headersSent) { console.error(error); return; }
   if (error.status && error.status < 500) return res.status(error.status).json({ error: error.message });
   if (error.code === "23505") return res.status(409).json({ error: "El registro ya existe. Revisa RUC, DNI, código o comprobante." });
-  if (error.code === "23503") return res.status(409).json({ error: "El registro está relacionado con otro módulo y no puede eliminarse." });
+  // 23503 = foreign key (NO ACTION), 23001 = ON DELETE RESTRICT: both mean "it is in use".
+  if (error.code === "23503" || error.code === "23001") return res.status(409).json({ error: "El registro está relacionado con otro módulo y no puede eliminarse." });
   // Workflow triggers raise 23514 without a constraint name and a message written for users.
   if (error.code === "23514" && !error.constraint && error.where) return res.status(409).json({ error: error.message });
   if (error.code === "23514") return res.status(400).json({ error: "Uno de los valores no cumple las reglas requeridas." });
@@ -806,6 +807,9 @@ app.delete("/api/personnel/:id", async (req, res) => {
     if (!result.rows[0]) return res.status(404).json({ error: "Personal no encontrado." });
     res.json({ ok: true });
   } catch (error) {
+    if (error.code === "23503" || error.code === "23001") {
+      return res.status(409).json({ error: "Esta persona tiene proyectos, rendiciones, anticipos o historial. Cámbiala a INACTIVO en lugar de eliminarla." });
+    }
     dbError(res, error);
   }
 });
@@ -859,6 +863,26 @@ function validateProject(body) {
   return null;
 }
 
+/** Each project role must be held by an active person with the matching profile. */
+async function projectPeopleError(body, current = null) {
+  const roles = [["producer_id","PRODUCTOR","productor"],["subproducer_id","SUB PRODUCTOR","subproductor"],["executive_id","EJECUTIVO","ejecutivo"]];
+  const ids = roles.map(([field]) => body[field]).filter((v) => v !== undefined && v !== null && String(v) !== "");
+  if (body.subproducer_id && String(body.subproducer_id) === String(body.producer_id)) return "El productor y el subproductor deben ser personas distintas.";
+  const people = new Map((await query(
+    `SELECT per.id, per.status, p.name AS profile FROM personnel per JOIN profiles p ON p.id=per.profile_id WHERE per.id = ANY($1::bigint[])`,
+    [ids.map(Number)]
+  )).rows.map((r) => [String(r.id), r]));
+  for (const [field, profile, label] of roles) {
+    const value = body[field];
+    if (value === undefined || value === null || String(value) === "") continue;
+    const person = people.get(String(value));
+    if (!person || person.profile !== profile) return "El " + label + " debe ser una persona con perfil " + profile + ".";
+    // An inactive person may stay on an existing project, but cannot be newly assigned.
+    if (person.status !== "ACTIVO" && String(current?.[field] ?? "") !== String(value)) return "El " + label + " seleccionado está INACTIVO.";
+  }
+  return null;
+}
+
 async function replaceConcepts(client, projectId, conceptIds = []) {
   const ids = [...new Set((conceptIds || []).map(Number).filter((x) => Number.isInteger(x) && x > 0))];
   await client.query('DELETE FROM project_event_concepts WHERE project_id=$1 AND NOT (concept_id=ANY($2::bigint[]))',[projectId,ids]);
@@ -870,7 +894,7 @@ async function replaceConcepts(client, projectId, conceptIds = []) {
 function projectValues(body) {
   return [
     Number(body.client_id), String(body.contact_name).trim(), String(body.service_type).trim(),
-    String(body.project_code).trim(), String(body.project_name).trim(), String(body.event_location).trim(),
+    String(body.project_code).trim().toUpperCase(), String(body.project_name).trim(), String(body.event_location).trim(),
     Number(body.number_of_dates),
     Number(body.commission || 0),
     String(body.currency || "PEN"),
@@ -901,6 +925,10 @@ async function syncProjectToMaster(db, project) {
 app.post("/api/projects", async (req, res) => {
   const validation = validateProject(req.body);
   if (validation) return res.status(400).json({ error: validation });
+  try {
+    const people = await projectPeopleError(req.body);
+    if (people) return res.status(400).json({ error: people });
+  } catch (error) { return dbError(res, error); }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -924,6 +952,11 @@ app.post("/api/projects", async (req, res) => {
 app.put("/api/projects/:id", async (req, res) => {
   const validation = validateProject(req.body);
   if (validation) return res.status(400).json({ error: validation });
+  try {
+    const current = (await query("SELECT producer_id, subproducer_id, executive_id FROM projects WHERE id=$1", [req.params.id])).rows[0];
+    const people = await projectPeopleError(req.body, current);
+    if (people) return res.status(400).json({ error: people });
+  } catch (error) { return dbError(res, error); }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1009,6 +1042,16 @@ function limaDate(offsetDays = 0) {
     .format(new Date(Date.now() + offsetDays * 86400000));
 }
 
+/** SUNAT numbers have up to 8 digits; stored as 8 ("45" → "00000045") like the migration does. */
+function normalizeDocumentNumber(value) {
+  return String(value ?? "").trim().replace(/^0+(?=\d)/, "").padStart(8, "0");
+}
+
+/** The report must belong to the project's producer or subproducer, or it can never be settled. */
+function assignedToProject(project, personnelId) {
+  return [project.producer_id, project.subproducer_id].filter(Boolean).map(Number).includes(Number(personnelId));
+}
+
 function validateExpenseInput(body) {
   const required = ["project_id","concept_id","producer_id","document_type","issuer_ruc","series","document_number","issue_date","amount"];
   const missing = requiredError(body, required);
@@ -1016,7 +1059,7 @@ function validateExpenseInput(body) {
   if (!["01","03"].includes(String(body.document_type))) return "Tipo de comprobante inválido.";
   if (!/^\d{11}$/.test(String(body.issuer_ruc))) return "El RUC emisor debe tener 11 dígitos.";
   if (!/^[A-Za-z0-9]{1,4}$/.test(String(body.series))) return "La serie debe tener hasta 4 caracteres.";
-  if (!/^\d{1,20}$/.test(String(body.document_number || "").trim())) return "Número de comprobante inválido.";
+  if (!/^\d{1,8}$/.test(String(body.document_number || "").trim())) return "El número del comprobante debe tener de 1 a 8 dígitos.";
   if (!(Number(body.amount) > 0)) return "El importe debe ser mayor a 0.";
   if (!isIsoDate(body.issue_date)) return "La fecha de emisión no es válida.";
   if (String(body.issue_date) > limaDate(1)) return "La fecha de emisión no puede ser futura.";
@@ -1154,6 +1197,9 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
       }
       req.body.producer_id = String(req.user.id);
     }
+    if (!assignedToProject(projectCheck.rows[0], req.body.producer_id)) {
+      return res.status(400).json({ error: "El responsable de la rendición debe ser el productor o el subproductor del proyecto." });
+    }
 
     const linkCheck = await query(
       "SELECT 1 FROM project_event_concepts WHERE project_id=$1 AND concept_id=$2",
@@ -1177,7 +1223,7 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
       [
         Number(req.body.project_id), Number(req.body.concept_id), Number(req.body.producer_id),
         String(req.body.document_type), String(req.body.issuer_ruc).trim(),
-        String(req.body.series).trim().toUpperCase(), String(req.body.document_number).trim(),
+        String(req.body.series).trim().toUpperCase(), normalizeDocumentNumber(req.body.document_number),
         req.body.issue_date, Number(req.body.amount), req.file.originalname, req.file.mimetype,
         stored.storage, stored.key,
       ]
@@ -1219,6 +1265,9 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
         return res.status(403).json({ error: "Este proyecto no está asignado a tu usuario." });
       }
       req.body.producer_id = String(req.user.id);
+    }
+    if (!assignedToProject(projectCheck.rows[0], req.body.producer_id)) {
+      return res.status(400).json({ error: "El responsable de la rendición debe ser el productor o el subproductor del proyecto." });
     }
 
     const linkCheck = await query(
@@ -1277,7 +1326,7 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
         String(req.body.document_type),
         String(req.body.issuer_ruc).trim(),
         String(req.body.series).trim().toUpperCase(),
-        String(req.body.document_number).trim(),
+        normalizeDocumentNumber(req.body.document_number),
         req.body.issue_date,
         Number(req.body.amount),
         fileName,

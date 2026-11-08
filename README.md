@@ -30,6 +30,21 @@ Aplicativo web para gestión de proyectos, conceptos de evento y rendición de g
   también al editarlos.
 - Al eliminar una rendición en borrador, o al reemplazar su archivo, se elimina el archivo que ya no se usa.
 
+### Relaciones entre tablas
+- **Una persona con dos perfiles** (mismo DNI, por ejemplo COORDINADOR y PRODUCTOR) es la misma persona para
+  las aprobaciones: no puede aprobar ni gestionar con un perfil lo que solicitó o rindió con el otro.
+- **Responsable de la rendición**: debe ser el productor o el subproductor del proyecto, también cuando la
+  registra un ADMIN o COORDINADOR. Así siempre se puede vincular al anticipo correspondiente.
+- **Proyectos**: el productor debe tener perfil PRODUCTOR; el subproductor, SUB PRODUCTOR (y ser otra persona);
+  el ejecutivo, EJECUTIVO. No se asigna a nadie INACTIVO. El código de proyecto se guarda en mayúsculas y no se
+  repite aunque cambie la mayúscula.
+- **Número de comprobante**: de 1 a 8 dígitos (formato SUNAT); se guarda con 8 (`45` → `00000045`).
+- **Personas con registros**: no se pueden eliminar; se cambian a INACTIVO. Antes, eliminar al solicitante dejaba
+  el anticipo sin dueño.
+- **Anticipos antiguos sin solicitante**: la migración solo los asigna si el nombre coincide con una única persona;
+  con homónimos quedan sin asignar para revisión manual.
+- Al borrar un cliente, concepto, proyecto o persona en uso se muestra un mensaje claro (antes: error interno).
+
 ## Lector de comprobantes (v1.10)
 
 Al adjuntar un comprobante, la app propone los datos en este orden:

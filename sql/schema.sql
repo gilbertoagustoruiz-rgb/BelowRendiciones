@@ -295,14 +295,40 @@ ALTER TABLE expense_reports ADD CONSTRAINT expense_reports_producer_id_fkey
   FOREIGN KEY (producer_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 ALTER TABLE expense_reports DROP CONSTRAINT IF EXISTS expense_reports_document_number_check;
-ALTER TABLE expense_reports
-  ALTER COLUMN document_number TYPE VARCHAR(20)
-  USING LPAD(document_number::text,8,'0');
+-- One-time type change. LPAD(x,8) would also cut numbers longer than 8 digits, so only pad.
+DO $docnumber$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='expense_reports' AND column_name='document_number'
+             AND (data_type <> 'character varying' OR character_maximum_length IS DISTINCT FROM 20)) THEN
+    ALTER TABLE expense_reports ALTER COLUMN document_number TYPE VARCHAR(20)
+      USING CASE WHEN LENGTH(document_number::text) < 8 THEN LPAD(document_number::text,8,'0') ELSE document_number::text END;
+  END IF;
+END
+$docnumber$;
 
-UPDATE expense_reports
-SET document_number=LPAD(document_number,8,'0')
-WHERE document_number ~ '^[0-9]+$'
-  AND LENGTH(document_number) < 8;
+-- Pads short numbers ("45" → "00000045"), skipping any receipt whose padded number already
+-- exists (a duplicate the app reports at startup), which would stop the whole migration.
+-- Padding does not change the number, so the approval guard is paused only for this step;
+-- otherwise an approved report with a short number would block the migration and the app.
+DO $padnumbers$
+DECLARE guarded BOOLEAN := EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='expense_workflow_guard' AND NOT tgisinternal);
+BEGIN
+  IF EXISTS (SELECT 1 FROM expense_reports WHERE document_number ~ '^[0-9]+$' AND LENGTH(document_number) < 8) THEN
+    IF guarded THEN ALTER TABLE expense_reports DISABLE TRIGGER expense_workflow_guard; END IF;
+    UPDATE expense_reports er
+    SET document_number=LPAD(er.document_number,8,'0')
+    WHERE er.document_number ~ '^[0-9]+$'
+      AND LENGTH(er.document_number) < 8
+      AND NOT EXISTS (
+        SELECT 1 FROM expense_reports o
+        WHERE o.id<>er.id AND o.issuer_ruc=er.issuer_ruc AND o.document_type=er.document_type
+          AND UPPER(o.series)=UPPER(er.series)
+          AND COALESCE(NULLIF(LTRIM(o.document_number,'0'),''),'0')=COALESCE(NULLIF(LTRIM(er.document_number,'0'),''),'0')
+      );
+    IF guarded THEN ALTER TABLE expense_reports ENABLE TRIGGER expense_workflow_guard; END IF;
+  END IF;
+END
+$padnumbers$;
 
 ALTER TABLE expense_reports ADD CONSTRAINT expense_reports_document_number_check
   CHECK (document_number ~ '^[0-9]+$') NOT VALID;
@@ -312,7 +338,7 @@ CREATE TABLE IF NOT EXISTS advance_requests (
   company VARCHAR(40) NOT NULL CHECK (company IN ('BELOW SAC','BELOW TRADE SAC')),
   request_date DATE NOT NULL DEFAULT ((NOW() AT TIME ZONE 'America/Lima')::date),
   applicant_name VARCHAR(180) NOT NULL,
-  applicant_personnel_id BIGINT REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE SET NULL,
+  applicant_personnel_id BIGINT REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT,
   account_number VARCHAR(40) NOT NULL,
   account_type VARCHAR(10) NOT NULL CHECK (account_type IN ('AHORRO','CTE')),
   account_holder VARCHAR(180) NOT NULL,
@@ -342,18 +368,24 @@ CREATE INDEX IF NOT EXISTS idx_expenses_validation ON expense_reports(validation
 
 ALTER TABLE advance_requests ADD COLUMN IF NOT EXISTS applicant_personnel_id BIGINT;
 
+-- Only when the name matches exactly one person: with homonyms the advance (and its bank
+-- details) could be assigned to the wrong producer. Those stay unassigned for manual review.
 UPDATE advance_requests ar
-SET applicant_personnel_id = per.id
-FROM personnel per
+SET applicant_personnel_id = match.id
+FROM (
+  SELECT UPPER(TRIM(per.full_name)) AS name, MIN(per.id) AS id
+  FROM personnel per JOIN profiles p ON p.id=per.profile_id
+  WHERE p.name IN ('PRODUCTOR','SUB PRODUCTOR')
+  GROUP BY UPPER(TRIM(per.full_name))
+  HAVING COUNT(*) = 1
+) match
 WHERE ar.applicant_personnel_id IS NULL
-  AND UPPER(TRIM(ar.applicant_name)) = UPPER(TRIM(per.full_name))
-  AND (
-    SELECT p.name FROM profiles p WHERE p.id=per.profile_id
-  ) IN ('PRODUCTOR','SUB PRODUCTOR');
+  AND UPPER(TRIM(ar.applicant_name)) = match.name;
 
 ALTER TABLE advance_requests DROP CONSTRAINT IF EXISTS advance_requests_applicant_personnel_id_fkey;
+-- RESTRICT: deleting the applicant would leave an advance (and its money) without an owner.
 ALTER TABLE advance_requests ADD CONSTRAINT advance_requests_applicant_personnel_id_fkey
-  FOREIGN KEY (applicant_personnel_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  FOREIGN KEY (applicant_personnel_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 CREATE INDEX IF NOT EXISTS idx_advance_requests_project ON advance_requests(project_id);
 CREATE INDEX IF NOT EXISTS idx_advance_requests_request_date ON advance_requests(request_date);
@@ -424,5 +456,20 @@ BEGIN
   END IF;
 END
 $normalized$;
+
+
+-- Project codes are unique regardless of case ("p001" = "P001"), as in the client/project master.
+DO $projectcode$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_projects_code_upper') THEN
+    IF EXISTS (SELECT 1 FROM projects GROUP BY UPPER(TRIM(project_code)) HAVING COUNT(*) > 1) THEN
+      RAISE NOTICE 'Hay códigos de proyecto repetidos con distinta mayúscula: no se crea uq_projects_code_upper.';
+    ELSE
+      UPDATE projects SET project_code=UPPER(TRIM(project_code)) WHERE project_code IS DISTINCT FROM UPPER(TRIM(project_code));
+      CREATE UNIQUE INDEX uq_projects_code_upper ON projects (UPPER(project_code));
+    END IF;
+  END IF;
+END
+$projectcode$;
 
 COMMIT;

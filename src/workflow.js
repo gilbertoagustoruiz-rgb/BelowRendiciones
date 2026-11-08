@@ -13,7 +13,11 @@ export function moneyCents(value) {
   return amount;
 }
 const cents = value => Math.round(Number(value || 0)*100);
-const owns = (user, entity, row) => String(entity==='expenses' ? row.producer_id : row.applicant_personnel_id) === String(user.id);
+const ownerId = (entity, row) => entity==='expenses' ? row.producer_id : row.applicant_personnel_id;
+// The same person can hold two profiles (two personnel rows with one DNI): compare the DNI too,
+// so nobody approves with one profile what they requested with the other.
+const owns = (user, entity, row) => String(ownerId(entity,row)) === String(user.id) ||
+  Boolean(row.owner_document && user.document_number && String(row.owner_document).toUpperCase() === String(user.document_number).toUpperCase());
 const canRead = (user, entity, row) => reviewers.has(user.profile) || owns(user, entity, row);
 
 export const balanceSelect = `SELECT a.*, p.project_code, p.project_name,
@@ -40,6 +44,7 @@ export function createWorkflowRouter(pool, storage=evidenceStorage) {
     try { await handler(req,res); }
     catch (error) {
       if(res.headersSent) return res.destroy(error);
+      if(error.code==='23001') error.code='23503'; // ON DELETE RESTRICT reports 23001
       if (!error.status && !['23505','23503','23514'].includes(error.code)) console.error(error);
       res.status(error.status || (error.code==='23505' ? 409 : ['23503','23514'].includes(error.code) ? 400 : 500))
         .json({error: error.status || error.code==='23514' ? error.message : error.code==='23505' ? 'El movimiento o comprobante ya está registrado.' : error.code==='23503' ? 'El registro tiene relaciones que impiden la operación.' : 'No se pudo completar la operación.'});
@@ -65,6 +70,8 @@ export function createWorkflowRouter(pool, storage=evidenceStorage) {
     const table=entity==='expenses' ? 'expense_reports' : 'advance_requests';
     const row=(await db.query(`SELECT * FROM ${table} WHERE id=$1 FOR UPDATE`,[id])).rows[0];
     if (!row) fail('Registro no encontrado.',404);
+    const owner=ownerId(entity,row);
+    if (owner) row.owner_document=(await db.query('SELECT document_number FROM personnel WHERE id=$1',[owner])).rows[0]?.document_number || null;
     if (!canRead(user,entity,row)) fail('No tienes acceso a este registro.',403);
     return row;
   }
@@ -76,8 +83,9 @@ export function createWorkflowRouter(pool, storage=evidenceStorage) {
 
   router.get('/movement-files/:id',route(async(req,res)=>{
     if(!/^\d+$/.test(req.params.id)) fail('Identificador inválido.');
-    const result=await pool.query(`SELECT mf.*,a.applicant_personnel_id FROM movement_files mf
-      JOIN advance_movements m ON m.id=mf.movement_id JOIN advance_requests a ON a.id=m.advance_id WHERE mf.id=$1`,[req.params.id]);
+    const result=await pool.query(`SELECT mf.*,a.applicant_personnel_id,per.document_number AS owner_document FROM movement_files mf
+      JOIN advance_movements m ON m.id=mf.movement_id JOIN advance_requests a ON a.id=m.advance_id
+      LEFT JOIN personnel per ON per.id=a.applicant_personnel_id WHERE mf.id=$1`,[req.params.id]);
     const file=result.rows[0];
     if(!file) fail('Constancia no encontrada.',404);
     if(!canRead(req.user,'advances',file)) fail('No tienes acceso a esta constancia.',403);

@@ -51,7 +51,7 @@ before(async()=>{
   server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   base = `http://127.0.0.1:${server.address().port}`;
 });
-after(async()=>{ if (server) await new Promise(resolve => server.close(resolve)); if (db) await db.close(); });
+after(async()=>{ await (await import('../src/document-reader.js')).closeDocumentReader(); if (server) await new Promise(resolve => server.close(resolve)); if (db) await db.close(); });
 beforeEach(async()=>{ loginLimiter.reset(); });
 
 async function login(document_number, password = PASSWORD, extra = {}) {
@@ -195,4 +195,16 @@ test('utilidades de seguridad: tipos reales, nombres de archivo y contraseñas',
   assert.equal(passwordError('Clave2026'), null);
   assert(passwordError('12345678')); assert(passwordError('corta1'));
   assert.deepEqual(parseCsv('a,b\n"1,5","x"\n'), [['a','b'],['1,5','x']]);
+});
+
+test('el endpoint de escaneo devuelve los datos del QR de SUNAT', async()=>{
+  const { default: QRCode } = await import('qrcode');
+  const productor = (await login('20000002')).cookie;
+  const png = await QRCode.toBuffer('20987654326|03|B001|4567|0.00|45.50|2026-10-15|1|12345678|', { width: 300, margin: 4 });
+  const form = new FormData(); form.append('document', new Blob([png], { type:'image/png' }), 'boleta.png');
+  const { res, body } = await api('/api/expenses/scan', productor, { method:'POST', body:form });
+  assert.equal(res.status, 200, JSON.stringify(body));
+  assert.equal(body.source, 'QR');
+  assert.deepEqual([body.fields.issuer_ruc, body.fields.document_type, body.fields.series, body.fields.document_number, body.fields.issue_date, body.fields.amount],
+    ['20987654326', '03', 'B001', '4567', '2026-10-15', 45.5]);
 });

@@ -310,7 +310,7 @@ ALTER TABLE expense_reports ADD CONSTRAINT expense_reports_document_number_check
 CREATE TABLE IF NOT EXISTS advance_requests (
   id BIGSERIAL PRIMARY KEY,
   company VARCHAR(40) NOT NULL CHECK (company IN ('BELOW SAC','BELOW TRADE SAC')),
-  request_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  request_date DATE NOT NULL DEFAULT ((NOW() AT TIME ZONE 'America/Lima')::date),
   applicant_name VARCHAR(180) NOT NULL,
   applicant_personnel_id BIGINT REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE SET NULL,
   account_number VARCHAR(40) NOT NULL,
@@ -357,6 +357,8 @@ ALTER TABLE advance_requests ADD CONSTRAINT advance_requests_applicant_personnel
 
 CREATE INDEX IF NOT EXISTS idx_advance_requests_project ON advance_requests(project_id);
 CREATE INDEX IF NOT EXISTS idx_advance_requests_request_date ON advance_requests(request_date);
+-- Request date follows Peru's calendar, not the database server's UTC clock.
+ALTER TABLE advance_requests ALTER COLUMN request_date SET DEFAULT ((NOW() AT TIME ZONE 'America/Lima')::date);
 CREATE INDEX IF NOT EXISTS idx_advance_requests_deposit_date ON advance_requests(deposit_date);
 
 CREATE INDEX IF NOT EXISTS idx_personnel_profile_id ON personnel(profile_id);

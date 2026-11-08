@@ -1085,6 +1085,7 @@ app.post("/api/expenses/scan", upload.single("document"), async (req, res) => {
     const result = await readReceiptDocument(req.file);
     res.json(result);
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
     console.error("Error leyendo comprobante:", error);
     res.status(500).json({ error: "No se pudo leer automáticamente el documento. Puedes completar los campos manualmente." });
   }

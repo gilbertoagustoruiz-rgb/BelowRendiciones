@@ -13,6 +13,34 @@ Aplicativo web para gestión de proyectos, conceptos de evento y rendición de g
 - Conceptos de Eventos
 - Presupuesto y liquidación (ADMIN / COORDINADOR)
 
+## Lector de comprobantes (v1.10)
+
+Al adjuntar un comprobante, la app propone los datos en este orden:
+
+1. **Código QR de SUNAT.** Las facturas y boletas electrónicas traen un QR con RUC, tipo, serie,
+   número, IGV, total y fecha. Si se lee, esos datos son exactos y no se usa OCR (respuesta en menos
+   de un segundo). Se reconoce aunque la foto esté borrosa, girada u oscura, y se ignoran otros QR
+   como los de pago Yape/Plin.
+2. **Texto del PDF**, cuando el PDF es digital.
+3. **OCR** de la foto o de las páginas del PDF escaneado. La foto se endereza según su orientación
+   EXIF; si se lee poco, se reintenta sin procesar y girada 90°, 270° y 180°.
+
+Reglas al interpretar el texto:
+- El RUC debe tener un dígito verificador válido: un RUC mal leído no se propone. Se descartan el RUC
+  del bloque de cliente y los de `COMPANY_RUCS` / `SUNAT_QUERY_RUC`.
+- `1,250` es mil doscientos cincuenta; también se aceptan `1,250.80` y `1.250,80`.
+- Se prefiere la fecha de emisión (no la de vencimiento) y se rechazan fechas imposibles.
+  Se aceptan `15/10/2026`, `15/10/26`, `2026-10-15` y `15 de octubre de 2026`.
+- La serie electrónica sigue el formato de SUNAT (F, B o E + 3 caracteres); la de comprobantes físicos
+  son 4 dígitos. Se corrigen confusiones típicas de OCR (`FOO1` → `F001`).
+- El total ignora SUBTOTAL, IGV, TOTAL DE ÍTEMS, VUELTO y similares.
+- Se avisa si el documento es una nota de crédito/débito, si el total parece estar en dólares o si la
+  imagen es poco legible.
+
+Los datos leídos son una propuesta: el productor debe revisarlos antes de guardar, y SUNAT los valida
+al guardar. `OCR_WORKERS` (1 por defecto) define cuántas lecturas OCR corren en paralelo; cada una
+usa ~150 MB de RAM. Las fechas de "hoy" de la app siguen el calendario de Lima.
+
 ## Seguridad y operación (v1.9)
 
 ### Accesos

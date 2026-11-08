@@ -2,6 +2,8 @@ import { initializeFinance, openFinanceProject } from './finance.js';
 import { initializeUi, closeMenu, icon, moduleIcons, moduleCopy, renderMobileNavigation, decorateTables } from './ui.js';
 import { initializePwa } from './pwa.js';
 const API = "/api";
+// Today's date in Peru. toISOString() is UTC and shows tomorrow after 7 pm in Lima.
+const limaToday=()=>new Intl.DateTimeFormat("en-CA",{timeZone:"America/Lima",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 
 const modules = {
   dashboard: { title: "Pendientes y conciliación", singular: "Pendiente" },
@@ -249,7 +251,7 @@ function renderStats() {
 
   if (state.module === "advances") {
     const total = state.rows.reduce((sum,r)=>sum+Number(r.amount || 0),0);
-    const upcoming = state.rows.filter((r)=>String(r.deposit_date || "").slice(0,10) >= new Date().toISOString().slice(0,10)).length;
+    const upcoming = state.rows.filter((r)=>String(r.deposit_date || "").slice(0,10) >= limaToday()).length;
     $("#stats").innerHTML = `
       <div class="stat"><span>Anticipos registrados</span><strong>${state.rows.length}</strong></div>
       <div class="stat"><span>Monto solicitado</span><strong>S/ ${total.toFixed(2)}</strong></div>
@@ -491,11 +493,13 @@ async function scanExpenseDocument(file) {
     ].filter(Boolean);
 
     if (status) {
-      const source=result.source==="OCR_IMAGE" ? "foto/OCR" : "PDF";
+      const source={QR:"el código QR del comprobante",PDF_TEXT:"el texto del PDF",OCR_PDF:"el PDF escaneado",OCR_IMAGE:"la foto"}[result.source] || "el documento";
       status.className=result.warning ? "scan-status warning" : "scan-status success";
-      status.textContent=detected.length
-        ? "Datos detectados desde "+source+": "+detected.join(", ")+". Revisa la información antes de guardar."
-        : (result.warning || "No se pudieron detectar datos automáticamente. Completa los campos manualmente.");
+      const summary=detected.length
+        ? "Datos leídos desde "+source+": "+detected.join(", ")+"."
+        : "No se pudieron detectar datos automáticamente. Completa los campos manualmente.";
+      const advice=result.warning || (result.qr ? "Datos tomados del QR de SUNAT; confirma que correspondan al comprobante." : "Revisa la información antes de guardar.");
+      status.textContent=summary+" "+advice;
     }
   } catch(error) {
     if (status) {
@@ -563,7 +567,7 @@ function openForm(row=null) {
   if (state.module === "advances") {
     $("#modalEyebrow").textContent=row ? "EDITAR" : "NUEVO";
 
-    const today=new Date().toISOString().slice(0,10);
+    const today=limaToday();
     $("#formFields").innerHTML=[
       selectHtml("company","Empresa",[
         {value:"BELOW SAC",label:"Below SAC"},

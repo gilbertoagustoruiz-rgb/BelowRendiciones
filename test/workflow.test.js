@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import express from 'express';
 import crypto from 'node:crypto';
 import ExcelJS from 'exceljs';
-import parsePdf from 'pdf-parse/lib/pdf-parse.js';
+import { extractPdfText } from '../src/document-reader.js';
 import { PGlite } from '@electric-sql/pglite';
 import { createWorkflowRouter, moneyCents } from '../src/workflow.js';
 import { createFinanceRouter, loadProjectFinance } from '../src/finance.js';
@@ -54,7 +54,7 @@ beforeEach(async()=>{
   await db.exec(`TRUNCATE project_budgets,budget_history,movement_files,workflow_history,advance_movements,advance_expenses,expense_reports,advance_requests RESTART IDENTITY CASCADE;
     UPDATE projects SET budget_revision=0;
     INSERT INTO advance_requests(id,company,applicant_name,applicant_personnel_id,account_number,account_type,account_holder,bank,beneficiary_document,beneficiary_name,amount,project_id,deposit_date,settlement_date,observations,expected_document_type)
-      SELECT i,'BELOW SAC','Usuario '||CASE WHEN i=3 THEN 3 WHEN i=4 THEN 1 ELSE 2 END,CASE WHEN i=3 THEN 3 WHEN i=4 THEN 1 ELSE 2 END,'123','AHORRO','Titular','Banco','12345678','Beneficiario',CASE WHEN i=1 THEN 5000 ELSE 1000 END,1,CURRENT_DATE,CURRENT_DATE-1,'Evento','FACTURA' FROM generate_series(1,4) i;
+      SELECT i,'BELOW SAC','Usuario '||CASE WHEN i=3 THEN 3 WHEN i=4 THEN 1 ELSE 2 END,CASE WHEN i=3 THEN 3 WHEN i=4 THEN 1 ELSE 2 END,'123','AHORRO','Titular','Banco','12345678','Beneficiario',CASE WHEN i=1 THEN 5000 ELSE 1000 END,1,(NOW() AT TIME ZONE 'America/Lima')::date,(NOW() AT TIME ZONE 'America/Lima')::date-1,'Evento','FACTURA' FROM generate_series(1,4) i;
     INSERT INTO expense_reports(id,project_id,concept_id,producer_id,document_type,issuer_ruc,series,document_number,issue_date,amount,file_name,file_mime,file_key,validation_status)
       SELECT i,CASE WHEN i=4 THEN 2 ELSE 1 END,(SELECT MIN(id) FROM event_concepts),CASE WHEN i=3 THEN 3 WHEN i=5 THEN 1 ELSE 2 END,'01','20987654321','F001',i::text,CURRENT_DATE,CASE WHEN i=1 THEN 4350 ELSE 200 END,'evidencia.pdf','application/pdf','evidencia-'||i,'VALIDADO' FROM generate_series(1,5) i;`);
 });
@@ -283,22 +283,18 @@ test('descargas Excel y PDF incluyen cifras, no convierten referencias en fórmu
   assert.equal(wb.getWorksheet('Movimientos').getCell('E2').value,5000);assert.equal(wb.getWorksheet('Rendiciones').getCell('I2').value,4350);
   res=await fetch(root+'/report.pdf');assert.equal(res.status,200);
   const pdf=Buffer.from(await res.arrayBuffer());assert.equal(pdf.subarray(0,5).toString(),'%PDF-');
-  // Legacy PDF.js requires an offset-zero typed array when reading pooled Buffers.
-  const parsed=await parsePdf(Uint8Array.from(pdf));assert.match(parsed.text,/4350\.00/);assert.match(parsed.text,/5000\.00/);assert.match(parsed.text,/Presupuesto/);
-  assert(parsed.numpages>=2);
+  const parsed=await extractPdfText(pdf);assert.match(parsed.text,/4350\.00/);assert.match(parsed.text,/5000\.00/);assert.match(parsed.text,/Presupuesto/);
+  assert(parsed.numPages>=2);
   res=await fetch(root+'/report.xlsx',{headers:{'x-user':'2'}});assert.equal(res.status,403);
   res=await fetch(root+'/report.pdf',{headers:{'x-user':'3'}});assert.equal(res.status,403);
 });
 test('PDF extenso pagina tablas y conserva indicadores de continuación',async()=>{
   const data=await loadProjectFinance(db,1);
   data.expenses=Array.from({length:90},(_,i)=>({...data.expenses[0],id:i+1,producer_name:'Productor con nombre extenso para verificar el ajuste del texto',concept_name:'Concepto de evento con descripción extensa'}));
-  const pages=[];
-  const result=await parsePdf(Uint8Array.from(await financePdf(data)),{pagerender:async page=>{
-    const content=await page.getTextContent();const text=content.items.map(item=>item.str).join(' ');pages.push(text);return text;
-  }});
-  assert(result.numpages>4);assert.match(result.text,/continuación/);
-  assert.equal(pages.length,result.numpages);
-  pages.forEach((text,i)=>{assert.match(text,/BELOW \| Liquidación de proyecto/);assert(text.length>300);assert(text.includes(`${i+1} / ${result.numpages}`));});
+  const result=await extractPdfText(await financePdf(data));const pages=result.pages.map(text=>text.replace(/\s+/g,' '));
+  assert(result.numPages>4);assert.match(result.text,/continuación/);
+  assert.equal(pages.length,result.numPages);
+  pages.forEach((text,i)=>{assert.match(text,/BELOW \| Liquidación de proyecto/);assert(text.length>300);assert(text.includes(`${i+1} / ${result.numPages}`));});
 });
 test('el panel conserva aprobadas sin vincular y pendientes SUNAT; evita duplicar referencias',async()=>{
   await approveExpense();

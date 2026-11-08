@@ -73,7 +73,7 @@ usa ~150 MB de RAM. Las fechas de "hoy" de la app siguen el calendario de Lima.
   el servidor PostgreSQL. Sin él la conexión sigue cifrada, pero sin verificar, y se muestra un aviso en el log.
 
 ### Despliegue
-- Node.js 22 o superior. La imagen Docker corre como usuario sin privilegios, no incluye `.env` ni `uploads/`,
+- Node.js 22.13 o superior. La imagen Docker corre como usuario sin privilegios, no incluye `.env` ni `uploads/`,
   tiene `HEALTHCHECK` y se apaga ordenadamente (termina las solicitudes en curso) al recibir SIGTERM.
 - `TRUST_PROXY=1` (valor por defecto) es el correcto detrás de DigitalOcean App Platform.
 - CI ejecuta `npm audit --omit=dev --audit-level=high`.

@@ -208,3 +208,73 @@ test('el endpoint de escaneo devuelve los datos del QR de SUNAT', async()=>{
   assert.deepEqual([body.fields.issuer_ruc, body.fields.document_type, body.fields.series, body.fields.document_number, body.fields.issue_date, body.fields.amount],
     ['20987654326', '03', 'B001', '4567', '2026-10-15', 45.5]);
 });
+
+// ---- Fallas detectadas en la revisión v1.11 ----
+const json = (method, body) => ({ method, headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
+
+test('los perfiles del sistema no se pueden renombrar ni borrar, y el alta inicial no se reabre', async()=>{
+  const admin = (await login('20000001')).cookie;
+  const adminProfile = (await pool.query("SELECT id FROM profiles WHERE name='ADMIN'")).rows[0].id;
+  const renamed = await api('/api/profiles/'+adminProfile, admin, json('PUT', { name:'ADMINISTRADOR' }));
+  assert.equal(renamed.res.status, 409, JSON.stringify(renamed.body));
+  assert.equal((await pool.query('SELECT name FROM profiles WHERE id=$1',[adminProfile])).rows[0].name, 'ADMIN');
+  assert.equal((await api('/api/profiles/'+adminProfile, admin, { method:'DELETE' })).res.status, 409);
+  // Even with no ADMIN profile holder, an initialised system never offers the bootstrap form again.
+  await pool.query("UPDATE profiles SET name='ADMIN_TMP' WHERE id=$1",[adminProfile]);
+  try {
+    const status = await (await fetch(base+'/api/auth/status')).json();
+    assert.equal(status.bootstrapRequired, false);
+    const boot = await fetch(base+'/api/auth/bootstrap', json('POST', { full_name:'Intruso', document_number:'66666666', password:'Intruso2026' }));
+    assert.equal(boot.status, 409);
+  } finally { await pool.query("UPDATE profiles SET name='ADMIN' WHERE id=$1",[adminProfile]); }
+});
+
+test('quien solicita un anticipo no puede desembolsarlo, reembolsarse ni liquidarlo', async()=>{
+  const admin = (await login('20000001')).cookie;
+  const coord = (await login('20000004', PASSWORD, { profile_id:(await pool.query("SELECT id FROM profiles WHERE name='COORDINADOR'")).rows[0].id })).cookie;
+  await pool.query(`INSERT INTO advance_requests(id,company,applicant_name,applicant_personnel_id,account_number,account_type,account_holder,bank,beneficiary_document,beneficiary_name,amount,project_id,deposit_date,settlement_date,observations,expected_document_type)
+    VALUES(10,'BELOW SAC','Usuario 4',4,'1','AHORRO','T','BCP','12345678','B',300,1,CURRENT_DATE,CURRENT_DATE+5,'Evento','FACTURA')`);
+  const act = (cookie, action) => { const f = new FormData(); f.append('action', action); f.append('comment', 'REF-1');
+    if (action==='DESEMBOLSAR') f.append('document', new Blob(['%PDF-1.4 constancia'], { type:'application/pdf' }), 'c.pdf');
+    return api('/api/workflow/advances/10/action', cookie, { method:'POST', body:f }); };
+  const selfApprove = await act(coord, 'APROBAR'); assert.equal(selfApprove.res.status, 403, JSON.stringify(selfApprove.body)+' me='+JSON.stringify((await api('/api/auth/me', coord)).body));
+  const approved = await act(admin, 'APROBAR'); assert.equal(approved.res.status, 200, JSON.stringify(approved.body));
+  const own = await act(coord, 'DESEMBOLSAR');
+  assert.equal(own.res.status, 403, JSON.stringify(own.body));
+  assert.equal((await act(admin, 'DESEMBOLSAR')).res.status, 200);
+});
+
+test('no se puede registrar dos veces el mismo comprobante cambiando ceros o mayúsculas', async()=>{
+  const productor = (await login('20000002')).cookie;
+  const concept = (await pool.query('SELECT MIN(id) AS id FROM event_concepts')).rows[0].id;
+  const send = (series, number) => { const f = new FormData();
+    for (const [k,v] of Object.entries({ project_id:1, concept_id:concept, producer_id:2, document_type:'01', issuer_ruc:'20987654326', series, document_number:number, issue_date:'2026-10-01', amount:'50.00' })) f.append(k, String(v));
+    f.append('document', new Blob(['%PDF-1.4 comprobante '+series+number], { type:'application/pdf' }), 'f.pdf');
+    return api('/api/expenses', productor, { method:'POST', body:f }); };
+  const first = await send('F001', '00000077');
+  assert.equal(first.res.status, 201, JSON.stringify(first.body));
+  const dup = await send('f001', '77');
+  assert.equal(dup.res.status, 409, JSON.stringify(dup.body));
+  assert.match(dup.body.error, /ya fue registrado/);
+  assert.equal((await pool.query("SELECT series FROM expense_reports WHERE id=$1",[first.body.row.id])).rows[0].series, 'F001');
+});
+
+test('un productor no puede mover su anticipo a un proyecto ajeno ni registrar fechas imposibles', async()=>{
+  await pool.query(`INSERT INTO projects(id,client_id,contact_name,service_type,project_code,project_name,event_location,number_of_dates,producer_id,executive_id)
+    VALUES(2,1,'C','Evento','P002','Proyecto ajeno','Lima',1,3,5) ON CONFLICT (id) DO NOTHING`);
+  const productor = (await login('20000002')).cookie;
+  const { body: current } = await api('/api/workflow/advances/1', productor);
+  const row = current.row;
+  const base = Object.fromEntries(['company','account_number','account_type','account_holder','bank','beneficiary_document','beneficiary_name','observations','expected_document_type'].map(k=>[k,row[k]]));
+  const payload = { ...base, applicant_name:'x', amount:'500', request_date:'2026-10-01', deposit_date:'2026-10-02', settlement_date:'2026-10-10' };
+  const moved = await api('/api/advances/1', productor, json('PUT', { ...payload, project_id:2 }));
+  assert.equal(moved.res.status, 403, JSON.stringify(moved.body));
+  const backwards = await api('/api/advances/1', productor, json('PUT', { ...payload, project_id:1, settlement_date:'2026-09-01' }));
+  assert.equal(backwards.res.status, 400);
+  const concept = (await pool.query('SELECT MIN(id) AS id FROM event_concepts')).rows[0].id;
+  const f = new FormData();
+  for (const [k,v] of Object.entries({ project_id:1, concept_id:concept, producer_id:2, document_type:'01', issuer_ruc:'20987654326', series:'F009', document_number:'1', issue_date:'2031-01-01', amount:'10' })) f.append(k, String(v));
+  f.append('document', new Blob(['%PDF-1.4 futuro'], { type:'application/pdf' }), 'f.pdf');
+  const future = await api('/api/expenses', productor, { method:'POST', body:f });
+  assert.equal(future.res.status, 400, JSON.stringify(future.body));
+});

@@ -405,4 +405,24 @@ BEGIN
 END
 $cleanup$;
 
+
+-- Same receipt typed with other leading zeros or lowercase series ("F001-00077" = "f001-77").
+-- Created only when existing data has no such duplicates; otherwise the app logs a warning.
+DO $normalized$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname='uq_expense_document_normalized') THEN
+    IF EXISTS (
+      SELECT 1 FROM expense_reports
+      GROUP BY issuer_ruc, document_type, UPPER(series), COALESCE(NULLIF(LTRIM(document_number,'0'),''),'0')
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Hay comprobantes duplicados: no se crea uq_expense_document_normalized.';
+    ELSE
+      CREATE UNIQUE INDEX uq_expense_document_normalized ON expense_reports
+        (issuer_ruc, document_type, UPPER(series), (COALESCE(NULLIF(LTRIM(document_number,'0'),''),'0')));
+    END IF;
+  END IF;
+END
+$normalized$;
+
 COMMIT;

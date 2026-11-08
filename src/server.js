@@ -205,15 +205,18 @@ const ROLE_MODULES = {
   EJECUTIVO: [],
 };
 
+/**
+ * The initial-admin form is offered only while nobody at all can sign in. Counting just
+ * ADMIN holders would reopen it to anyone on the internet if that profile were emptied.
+ */
+async function systemInitialised(db) {
+  const result=await db.query("SELECT EXISTS(SELECT 1 FROM personnel WHERE password_hash IS NOT NULL) AS ready");
+  return Boolean(result.rows[0].ready);
+}
+
 app.get("/api/auth/status", async (_req,res)=>{
   try {
-    const result=await query(
-      `SELECT COUNT(*)::int AS total
-       FROM personnel per
-       JOIN profiles p ON p.id=per.profile_id
-       WHERE p.name='ADMIN'`
-    );
-    res.json({ bootstrapRequired: Number(result.rows[0].total) === 0 });
+    res.json({ bootstrapRequired: !(await systemInitialised(pool)) });
   } catch(error) {
     dbError(res,error);
   }
@@ -247,13 +250,7 @@ app.post("/api/auth/bootstrap", async (req,res)=>{
     await db.query("BEGIN");
     // Serialises simultaneous bootstrap attempts so only one initial ADMIN can exist.
     await db.query("SELECT pg_advisory_xact_lock(724190312)");
-    const admins=await db.query(
-      `SELECT COUNT(*)::int AS total
-       FROM personnel per
-       JOIN profiles p ON p.id=per.profile_id
-       WHERE p.name='ADMIN'`
-    );
-    if (Number(admins.rows[0].total) > 0) {
+    if (await systemInitialised(db)) {
       await db.query("ROLLBACK");
       return res.status(409).json({ error:"El administrador inicial ya fue creado." });
     }
@@ -580,10 +577,24 @@ app.post("/api/:type", async (req, res, next) => {
   } catch (error) { dbError(res, error); }
 });
 
+// Permissions are tied to these names: renaming or deleting one would lock everyone out.
+const SYSTEM_PROFILES = new Set(["ADMIN","COORDINADOR","PRODUCTOR","SUB PRODUCTOR","EJECUTIVO"]);
+async function systemProfileGuard(type, id) {
+  if (type !== "profiles") return null;
+  const current = await query("SELECT name FROM profiles WHERE id=$1", [id]);
+  return current.rows[0] && SYSTEM_PROFILES.has(current.rows[0].name)
+    ? "Los perfiles del sistema (ADMIN, COORDINADOR, PRODUCTOR, SUB PRODUCTOR, EJECUTIVO) no se pueden renombrar ni eliminar."
+    : null;
+}
+
 app.put("/api/:type/:id", async (req, res, next) => {
   const type = req.params.type;
   const config = catalogs[type];
   if (!config) return next();
+  try {
+    const locked = await systemProfileGuard(type, req.params.id);
+    if (locked) return res.status(409).json({ error: locked });
+  } catch (error) { return dbError(res, error); }
 
   const validation = requiredError(req.body, config.required) || identityError(type, req.body);
   if (validation) return res.status(400).json({ error: validation });
@@ -611,6 +622,8 @@ app.delete("/api/:type/:id", async (req, res, next) => {
   const config = catalogs[req.params.type];
   if (!config) return next();
   try {
+    const locked = await systemProfileGuard(req.params.type, req.params.id);
+    if (locked) return res.status(409).json({ error: locked });
     const result = await query("DELETE FROM " + config.table + " WHERE id=$1 RETURNING id", [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: "Registro no encontrado." });
     res.json({ ok: true });
@@ -983,6 +996,19 @@ app.get("/api/expenses/:id/file", async (req, res) => {
   }
 });
 
+function isIsoDate(value) {
+  const m = String(value ?? "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3] && +m[1] >= 2000;
+}
+
+/** YYYY-MM-DD in Peru, optionally shifted by whole days. */
+function limaDate(offsetDays = 0) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Lima", year: "numeric", month: "2-digit", day: "2-digit" })
+    .format(new Date(Date.now() + offsetDays * 86400000));
+}
+
 function validateExpenseInput(body) {
   const required = ["project_id","concept_id","producer_id","document_type","issuer_ruc","series","document_number","issue_date","amount"];
   const missing = requiredError(body, required);
@@ -991,8 +1017,23 @@ function validateExpenseInput(body) {
   if (!/^\d{11}$/.test(String(body.issuer_ruc))) return "El RUC emisor debe tener 11 dígitos.";
   if (!/^[A-Za-z0-9]{1,4}$/.test(String(body.series))) return "La serie debe tener hasta 4 caracteres.";
   if (!/^\d{1,20}$/.test(String(body.document_number || "").trim())) return "Número de comprobante inválido.";
-  if (Number(body.amount) <= 0) return "El importe debe ser mayor a 0.";
+  if (!(Number(body.amount) > 0)) return "El importe debe ser mayor a 0.";
+  if (!isIsoDate(body.issue_date)) return "La fecha de emisión no es válida.";
+  if (String(body.issue_date) > limaDate(1)) return "La fecha de emisión no puede ser futura.";
   return null;
+}
+
+/** Same receipt even when typed with other leading zeros or lowercase series. */
+async function duplicateExpense(body, excludeId = null) {
+  const result = await query(
+    `SELECT id FROM expense_reports
+     WHERE issuer_ruc=$1 AND document_type=$2 AND UPPER(series)=UPPER($3)
+       AND COALESCE(NULLIF(LTRIM(document_number,'0'),''),'0')=COALESCE(NULLIF(LTRIM($4,'0'),''),'0')
+       AND ($5::bigint IS NULL OR id<>$5::bigint)
+     LIMIT 1`,
+    [String(body.issuer_ruc).trim(), String(body.document_type), String(body.series).trim(), String(body.document_number).trim(), excludeId]
+  );
+  return result.rows[0]?.id || null;
 }
 
 /** Removes a file uploaded during a request whose database change failed. */
@@ -1121,6 +1162,10 @@ app.post("/api/expenses", upload.single("document"), async (req, res) => {
     if (!linkCheck.rows[0]) {
       return res.status(400).json({ error: "El concepto seleccionado no está asignado a este proyecto." });
     }
+    const duplicate = await duplicateExpense(req.body, null);
+    if (duplicate) {
+      return res.status(409).json({ error: "Este comprobante ya fue registrado (rendición #" + duplicate + "). Revisa serie y número." });
+    }
 
     stored = await saveEvidence(req.file);
     const inserted = await query(
@@ -1183,6 +1228,10 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
     if (!linkCheck.rows[0]) {
       return res.status(400).json({ error: "El concepto seleccionado no está asignado a este proyecto." });
     }
+    const duplicate = await duplicateExpense(req.body, req.params.id);
+    if (duplicate) {
+      return res.status(409).json({ error: "Este comprobante ya fue registrado (rendición #" + duplicate + "). Revisa serie y número." });
+    }
 
     let fileName = current.rows[0].file_name;
     let fileMime = current.rows[0].file_mime;
@@ -1239,7 +1288,12 @@ app.put("/api/expenses/:id", upload.single("document"), async (req, res) => {
       ]
     );
 
-    // The previous receipt is kept in storage on purpose: it is part of the audit trail.
+    // A draft's replaced receipt was never reviewed: remove it. An observed report keeps its
+    // previous file in storage, since the reviewer's observation referred to it.
+    const previous = current.rows[0];
+    if (stored && previous.approval_status === "BORRADOR" && previous.file_key && previous.file_key !== stored.key) {
+      await discardEvidence({ storage: previous.file_storage, key: previous.file_key });
+    }
     stored = null;
     const validationResult = await runSunatValidation(req.params.id);
     const finalRow = await query(expenseSelect + " WHERE er.id=$1", [req.params.id]);
@@ -1273,8 +1327,10 @@ app.delete("/api/expenses/:id", async (req, res) => {
         return res.status(403).json({ error:"No puedes eliminar esta rendición." });
       }
     }
-    const result = await query("DELETE FROM expense_reports WHERE id=$1 RETURNING id", [req.params.id]);
+    const result = await query("DELETE FROM expense_reports WHERE id=$1 RETURNING id, file_storage AS storage, file_key AS key", [req.params.id]);
     if (!result.rows[0]) return res.status(404).json({ error: "Rendición no encontrada." });
+    // Only drafts/observed reports reach this point; their receipt is not part of any approval.
+    if (result.rows[0].key) await discardEvidence(result.rows[0]);
     res.json({ ok: true });
   } catch (error) { dbError(res, error); }
 });
@@ -1310,7 +1366,11 @@ function validateAdvanceRequest(body) {
   if (!["RH","FACTURA","BOLETA","OTRO"].includes(String(body.expected_document_type))) {
     return "Tipo de comprobante inválido.";
   }
-  if (Number(body.amount) <= 0) return "El monto a depositar debe ser mayor a 0.";
+  if (!(Number(body.amount) > 0)) return "El monto a depositar debe ser mayor a 0.";
+  for (const [field,label] of [["request_date","solicitud"],["deposit_date","abono"],["settlement_date","rendición"]]) {
+    if (!isIsoDate(body[field])) return "La fecha de "+label+" no es válida.";
+  }
+  if (String(body.settlement_date) < String(body.deposit_date)) return "La fecha de rendición no puede ser anterior a la fecha de abono.";
 
   return null;
 }
@@ -1404,6 +1464,15 @@ app.put("/api/advances/:id", async (req, res) => {
 
     const validation = validateAdvanceRequest(req.body);
     if (validation) return res.status(400).json({ error: validation });
+
+    const project = await query("SELECT producer_id, subproducer_id FROM projects WHERE id=$1", [req.body.project_id]);
+    if (!project.rows[0]) return res.status(404).json({ error: "Proyecto no encontrado." });
+    if (["PRODUCTOR","SUB PRODUCTOR"].includes(req.user.profile)) {
+      const assigned=[project.rows[0].producer_id,project.rows[0].subproducer_id].filter(Boolean).map(Number);
+      if (!assigned.includes(Number(req.user.id))) {
+        return res.status(403).json({ error:"Este proyecto no está asignado a tu usuario." });
+      }
+    }
 
     const values = [...advanceRequestValues(req.body), req.params.id];
     const result = await query(
@@ -1565,6 +1634,18 @@ app.use((error, _req, res, next) => {
 app.use("/api", (_req, res) => res.status(404).json({ error: "Ruta no encontrada." }));
 app.get("*", (_req, res) => res.sendFile("index.html", { root: "public" }));
 
+/** Lists existing duplicate receipts that prevent the normalized unique index. */
+async function warnDuplicateReceipts() {
+  const index = await query("SELECT 1 FROM pg_indexes WHERE indexname='uq_expense_document_normalized'");
+  if (index.rows.length) return;
+  const dup = await query(`SELECT issuer_ruc, document_type, UPPER(series) AS series,
+      COALESCE(NULLIF(LTRIM(document_number,'0'),''),'0') AS number, ARRAY_AGG(id ORDER BY id) AS ids
+    FROM expense_reports GROUP BY 1,2,3,4 HAVING COUNT(*)>1 LIMIT 20`);
+  for (const d of dup.rows) {
+    console.warn("[duplicados] Comprobante " + d.issuer_ruc + " " + d.series + "-" + d.number + " registrado en rendiciones " + d.ids.join(", ") + ". Revísalas y elimina la repetida.");
+  }
+}
+
 export async function start() {
   try {
     await ensureSchema();
@@ -1574,6 +1655,7 @@ export async function start() {
     process.exit(1);
   }
 
+  warnDuplicateReceipts().catch((error) => console.error("[duplicados]", error.message));
   const server = app.listen(PORT, () => console.log("Below Rendiciones activo en puerto " + PORT));
   server.headersTimeout = 65_000;
   server.requestTimeout = 120_000;

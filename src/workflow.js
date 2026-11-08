@@ -92,7 +92,8 @@ export function createWorkflowRouter(pool, storage=evidenceStorage) {
     await transaction(async(db,savedFiles)=>{
       const movement=(await db.query('SELECT * FROM advance_movements WHERE id=$1',[req.params.id])).rows[0];
       if(!movement) fail('Movimiento no encontrado.',404);
-      await lock(db,'advances',movement.advance_id,req.user);
+      const advance=await lock(db,'advances',movement.advance_id,req.user);
+      if(owns(req.user,'advances',advance)) fail('No puedes adjuntar constancias a tu propio anticipo.',403);
       await attachBankEvidence(db,storage,movement.id,req.file,req.user.id,savedFiles);
       await record(db,req,'advances',movement.advance_id,'CONSTANCIA_ADJUNTA','Movimiento #'+movement.id+' · '+note(req));
     });
@@ -160,6 +161,8 @@ export function createWorkflowRouter(pool, storage=evidenceStorage) {
       const row=await lock(db,'advances',req.params.id,req.user);
       const action=req.body.action,comment=note(req);
       if(!reviewers.has(req.user.profile)) fail('Solo ADMIN o COORDINADOR pueden gestionar desembolsos y conciliaciones.',403);
+      // Segregation of duties: nobody disburses, reimburses, links or settles their own advance.
+      if(owns(req.user,'advances',row)) fail('No puedes gestionar tu propio anticipo: debe hacerlo otro ADMIN o COORDINADOR.',403);
       const financial=['DESEMBOLSAR','DEVOLUCION','REEMBOLSO'].includes(action);
       if(financial) checkBankEvidence(req.file);
       else if(req.file) fail('Adjunta la constancia mediante un movimiento bancario.');

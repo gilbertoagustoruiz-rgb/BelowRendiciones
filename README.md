@@ -13,6 +13,23 @@ Aplicativo web para gestión de proyectos, conceptos de evento y rendición de g
 - Conceptos de Eventos
 - Presupuesto y liquidación (ADMIN / COORDINADOR)
 
+## Controles adicionales (v1.11)
+
+- **Perfiles del sistema** (ADMIN, COORDINADOR, PRODUCTOR, SUB PRODUCTOR, EJECUTIVO): no se pueden renombrar
+  ni eliminar, porque los permisos dependen de esos nombres. El formulario de administrador inicial solo aparece
+  mientras no exista ningún usuario con contraseña.
+- **Separación de funciones**: quien solicita un anticipo no puede aprobarlo, desembolsarlo, registrar
+  devoluciones o reembolsos, vincular rendiciones, liquidarlo ni adjuntarle constancias. Si un ADMIN o
+  COORDINADOR solicita un anticipo, otro ADMIN o COORDINADOR debe gestionarlo.
+- **Comprobantes duplicados**: `F001-00000077` y `f001-77` se reconocen como el mismo comprobante. Si la base ya
+  tiene duplicados de este tipo, no se crea el índice único y el log del arranque lista las rendiciones a revisar
+  (`[duplicados] …`); el registro de nuevos duplicados se bloquea igual desde la app.
+- **Fechas**: la emisión del comprobante no puede ser futura y la fecha de rendición del anticipo no puede ser
+  anterior a la de abono.
+- Un productor solo puede asignar sus anticipos a proyectos donde figura como productor o subproductor,
+  también al editarlos.
+- Al eliminar una rendición en borrador, o al reemplazar su archivo, se elimina el archivo que ya no se usa.
+
 ## Lector de comprobantes (v1.10)
 
 Al adjuntar un comprobante, la app propone los datos en este orden:

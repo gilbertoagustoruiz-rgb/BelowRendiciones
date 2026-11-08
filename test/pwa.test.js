@@ -8,7 +8,7 @@ async function worker() {
   const caches={
     async open(){return {async addAll(paths){assets.push(...paths);for(const path of paths)responses.set(path,new Response(path));}};},
     async match(path){return responses.get(path);},
-    async keys(){return ['below-static-old','below-static-v1.8.0-mobile1','below-static-v1.9.0','below-static-v1.10.0','unrelated-cache'];},
+    async keys(){return ['below-static-old','below-static-v1.8.0-mobile1','below-static-v1.9.0','below-static-v1.10.0','below-static-v1.11.0','unrelated-cache'];},
     async delete(key){deleted.push(key);},
   };
   vm.runInNewContext(await readFile('public/sw.js','utf8'),{URL,caches,fetch:async()=>{throw new Error('Offline');},self:{
@@ -53,5 +53,5 @@ test('abre la interfaz sin red y conserva la versión de sus recursos hasta acep
 });
 test('actualizar elimina únicamente versiones anteriores de la caché pública de Below',async()=>{
   const sw=await worker();await sw.send('activate');
-  assert.deepEqual(sw.deleted,['below-static-old','below-static-v1.8.0-mobile1','below-static-v1.9.0']);assert.equal(sw.claimed(),true);
+  assert.deepEqual(sw.deleted,['below-static-old','below-static-v1.8.0-mobile1','below-static-v1.9.0','below-static-v1.10.0']);assert.equal(sw.claimed(),true);
 });

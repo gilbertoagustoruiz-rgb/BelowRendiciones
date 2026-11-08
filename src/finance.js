@@ -64,6 +64,7 @@ export function createFinanceRouter(pool) {
     try {await fn(req,res);}
     catch(error) {
       if(res.headersSent) return res.destroy(error);
+      if(error.code==='23001') error.code='23503'; // ON DELETE RESTRICT
       if(!error.status && !['23503','23514'].includes(error.code)) console.error(error);
       res.status(error.status || (['23503','23514'].includes(error.code)?400:500)).json({error:error.status?error.message:'No se pudo completar la operación financiera.'});
     }

@@ -535,7 +535,7 @@ function openForm(row=null) {
       '<div class="field"><label>Concepto del Evento</label><select name="concept_id" required><option value="">Seleccionar...</option>'+
         (selectedProject?.concepts || []).map((c)=>'<option value="'+c.id+'" '+(String(row?.concept_id ?? "")===String(c.id) ? "selected" : "")+'>'+esc(c.name)+'</option>').join("")+
       '</select></div>',
-      selectHtml("producer_id","Productor",['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?[{value:state.currentUser.id,label:state.currentUser.full_name}]:personnelOptions("PRODUCTOR"),row?.producer_id ?? (['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?state.currentUser.id:null),true),
+      selectHtml("producer_id","Productor",['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?[{value:state.currentUser.id,label:state.currentUser.full_name}]:[...personnelOptions("PRODUCTOR"),...personnelOptions("SUB PRODUCTOR")],row?.producer_id ?? (['PRODUCTOR','SUB PRODUCTOR'].includes(state.currentUser?.profile)?state.currentUser.id:null),true),
       '<div class="field full receipt-upload"><label>'+(row ? "Reemplazar PDF o foto (opcional)" : "PDF o foto del comprobante")+'</label><input name="document" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" '+(row ? "" : "required")+'><div id="documentScanStatus" class="scan-status">'+
         (row ? 'Si no seleccionas un archivo nuevo, se conservará el documento actual.' : 'Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.')+
       '</div></div>',

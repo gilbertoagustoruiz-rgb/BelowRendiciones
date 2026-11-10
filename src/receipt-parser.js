@@ -113,7 +113,8 @@ function extractDate(text) {
   return found.find((f) => f.rank < 3)?.iso || null;
 }
 
-const CUSTOMER_CONTEXT = /(CLIENTE|ADQUIRENTE|SE[ÑN]OR(?:\(?ES\)?)?|SR(?:ES)?\.|DESTINATARIO|COMPRADOR|USUARIO|DOC\.?\s*IDENT)/;
+// "Recibí de … identificado con RUC" is the customer block of a recibo por honorarios.
+const CUSTOMER_CONTEXT = /(CLIENTE|ADQUIRI?ENTE|SE[ÑN]OR(?:\(?ES\)?)?|SR(?:ES)?\.|DESTINATARIO|COMPRADOR|USUARIO|DOC\.?\s*IDENT|RECIB[IÍ]\s+DE|IDENTIFICAD[OA]\s+CON)/;
 
 function companyRucs() {
   return new Set(
@@ -142,7 +143,8 @@ function extractIssuerRuc(text) {
   return candidates.find((c) => c.rank < 2)?.ruc || null;
 }
 
-const KEYWORD_RE = /(FACTURA|BOLETA)/g;
+const KEYWORD_RE = /(FACTURA|BOLETA|HONORARIOS)/g;
+const HONORARIOS = /RECIBO\s+(?:POR\s+|DE\s+)?HONORARIOS/i;
 
 /**
  * SUNAT electronic series are 4 characters starting with F (factura), B (boleta) or
@@ -174,6 +176,8 @@ function extractDocType(text, series) {
   if (CREDIT_NOTE.test(text)) return null;
   if (series?.startsWith("F")) return "01";
   if (series?.startsWith("B")) return "03";
+  // Recibo por honorarios: electronic series E001… or a printed 4-digit series.
+  if (HONORARIOS.test(text)) return "R1";
   const upper = text.toUpperCase();
   const factura = upper.search(/FACTURA/), boleta = upper.search(/BOLETA/);
   if (factura < 0 && boleta < 0) return null;
@@ -184,10 +188,13 @@ function extractDocType(text, series) {
 
 const AMOUNT = "([0-9][0-9.,]*[0-9]|[0-9])";
 const GAP = "[^0-9\\n]{0,24}?";
-const NOT_TOTAL = "(?!\\s*(?:DE\\s+)?(?:ITEMS?|ART|UNID|CANT|IGV|I\\.G\\.V|ISC|DSCTO|DESC|GRAV|EXON|INAF|GRAT|ANTIC|PAGAD|RECIB|VUELTO|CUOTA|PUNTOS|BULTOS|KG|PESO|PERCEP|RETEN))";
+// "TOTAL NETO" (RH, after retention) and similar are not the receipt total.
+const NOT_TOTAL = "(?!\\s*(?:DE\\s+)?(?:ITEMS?|ART|UNID|CANT|IGV|I\\.G\\.V|ISC|DSCTO|DESC|GRAV|EXON|INAF|GRAT|ANTIC|PAGAD|RECIB|VUELTO|CUOTA|PUNTOS|BULTOS|KG|PESO|PERCEP|RETEN|NETO))";
 const TOTAL_PATTERNS = [
-  { rank: 0, re: new RegExp(`(?:IMPORTE\\s+TOTAL|TOTAL\\s+A\\s+PAGAR|TOTAL\\s+VENTA|MONTO\\s+TOTAL|TOTAL\\s+FACTURA|TOTAL\\s+BOLETA|TOTAL\\s+COMPROBANTE)${GAP}${AMOUNT}`, "gi") },
-  { rank: 1, re: new RegExp(`(?<![A-Z.])(?<!SUB\\s?)TOTAL${NOT_TOTAL}${GAP}${AMOUNT}`, "gi") },
+  // RH: "Total por honorarios" is the gross amount (before the 8% retention), the one SUNAT validates.
+  { rank: 0, re: new RegExp(`TOTAL\\s+(?:POR\\s+|DE\\s+)?HONORARIOS${GAP}${AMOUNT}`, "gi") },
+  { rank: 1, re: new RegExp(`(?:IMPORTE\\s+TOTAL|TOTAL\\s+A\\s+PAGAR|TOTAL\\s+VENTA|MONTO\\s+TOTAL|TOTAL\\s+FACTURA|TOTAL\\s+BOLETA|TOTAL\\s+COMPROBANTE)${GAP}${AMOUNT}`, "gi") },
+  { rank: 2, re: new RegExp(`(?<![A-Z.])(?<!SUB\\s?)TOTAL${NOT_TOTAL}${GAP}${AMOUNT}`, "gi") },
 ];
 
 function extractTotal(text) {
@@ -198,13 +205,98 @@ function extractTotal(text) {
       const amount = parseMoney(m[1]);
       if (!amount) continue;
       const usd = /US\$|USD|D[ÓO]LAR/.test(m[0]);
-      found.push({ amount, rank, usd });
+      found.push({ amount, rank, usd, raw: m[1] });
     }
     if (found.length) break; // keep only the most specific label that appears
   }
-  if (!found.length) return { amount: null, currency: null };
+  if (!found.length) return { amount: null, currency: null, raw: null };
   const best = found.reduce((a, b) => (b.amount > a.amount ? b : a));
-  return { amount: best.amount, currency: best.usd ? "USD" : "PEN" };
+  return { amount: best.amount, currency: best.usd ? "USD" : "PEN", raw: best.raw };
+}
+
+/* ---------- Arithmetic cross-check of the total ---------- */
+
+const AMT = "([0-9][0-9.,]*[0-9]|[0-9])";
+const LABELLED = {
+  base: new RegExp(`(?:OP\\.?\\s*GRAVADAS?|OPERACI[OÓ]N(?:ES)?\\s+GRAVADAS?|VALOR\\s+(?:DE\\s+)?VENTA|(?<![A-Z])SUB\\s?TOTAL)[^0-9\\n]{0,24}?${AMT}`, "i"),
+  igv: new RegExp(`I\\.?\\s?G\\.?\\s?V\\.?(?:\\s*\\(?\\s*(\\d{1,2})(?:[.,]\\d+)?\\s*%\\s*\\)?)?[^0-9\\n]{0,20}?${AMT}`, "i"),
+  cash: new RegExp(`(?:EFECTIVO|PAGO\\s+CON|RECIBIDO)(?!\\s*(?:DE|:?\\s*[A-Z]{3,}))[^0-9\\n]{0,20}?${AMT}`, "i"),
+  change: new RegExp(`(?:VUELTO|CAMBIO)[^0-9\\n]{0,20}?${AMT}`, "i"),
+  retention: new RegExp(`RETENCI[OÓ]N[^\\n]{0,30}?${AMT}(?=[^0-9%]*$)`, "im"),
+  net: new RegExp(`(?:TOTAL\\s+)?NETO(?:\\s+RECIBIDO|\\s+A\\s+PAGAR)?[^0-9\\n]{0,24}?${AMT}`, "i"),
+};
+
+function labelled(text, key) {
+  const m = text.match(LABELLED[key]);
+  if (!m) return null;
+  const raw = m[m.length - 1];
+  return { value: parseMoney(raw), raw, rate: key === "igv" && m[1] && m.length > 2 ? Number(m[1]) / 100 : null };
+}
+
+/** OCR of thermal tickets often adds a "1" in the gap after "S/" ("S/   87.40" → 187.40). */
+function withoutSpuriousOne(raw) {
+  const digits = String(raw || "").replace(/[^\d.,]/g, "");
+  return /^1\d/.test(digits) ? parseMoney(digits.slice(1)) : null;
+}
+
+// Receipts add up to the cent; one or two cents of rounding are normal (IGV per line).
+const near = (a, b, tolerance = 0.02) => a !== null && b !== null && Math.abs(a - b) <= tolerance + 1e-9;
+
+const WORD_VALUES = {
+  CERO: 0, UN: 1, UNO: 1, UNA: 1, DOS: 2, TRES: 3, CUATRO: 4, CINCO: 5, SEIS: 6, SIETE: 7, OCHO: 8, NUEVE: 9,
+  DIEZ: 10, ONCE: 11, DOCE: 12, TRECE: 13, CATORCE: 14, QUINCE: 15, DIECISEIS: 16, DIECISIETE: 17, DIECIOCHO: 18,
+  DIECINUEVE: 19, VEINTE: 20, VEINTIUN: 21, VEINTIUNO: 21, VEINTIDOS: 22, VEINTITRES: 23, VEINTICUATRO: 24,
+  VEINTICINCO: 25, VEINTISEIS: 26, VEINTISIETE: 27, VEINTIOCHO: 28, VEINTINUEVE: 29, TREINTA: 30, CUARENTA: 40,
+  CINCUENTA: 50, SESENTA: 60, SETENTA: 70, OCHENTA: 80, NOVENTA: 90, CIEN: 100, CIENTO: 100, DOSCIENTOS: 200,
+  TRESCIENTOS: 300, CUATROCIENTOS: 400, QUINIENTOS: 500, SEISCIENTOS: 600, SETECIENTOS: 700, OCHOCIENTOS: 800,
+  NOVECIENTOS: 900,
+};
+
+/** "SON: DOS MIL OCHOCIENTOS TREINTA Y DOS CON 00/100 SOLES" → 2832. Null if any word is unknown. */
+export function amountInWords(text) {
+  const m = String(text).toUpperCase().match(/(?:\bSON|LA\s+SUMA\s+DE|IMPORTE\s+EN\s+LETRAS)\s*:?\s*([A-ZÁÉÍÓÚÑ ]+?)\s+CON\s+(\d{1,2})\s*\/\s*100/);
+  if (!m) return null;
+  const words = m[1].normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/).filter((w) => w && w !== "Y");
+  let total = 0, current = 0;
+  for (const raw of words) {
+    const w = raw.replace(/AS$/, "OS"); // DOSCIENTAS → DOSCIENTOS
+    if (w === "MIL") { total += (current || 1) * 1000; current = 0; }
+    else if (w === "MILLON" || w === "MILLONES") { total += (current || 1) * 1_000_000; current = 0; }
+    else if (w in WORD_VALUES) current += WORD_VALUES[w];
+    else return null;
+  }
+  const value = total + current + Number(m[2]) / 100;
+  return value > 0 ? Number(value.toFixed(2)) : null;
+}
+
+/**
+ * Checks the total against the receipt's own figures: base + IGV, the IGV rate, cash − change,
+ * and for RH the 8% retention. Returns the amount that agrees with them and how it was checked.
+ */
+export function crossCheckTotal(text, amount, rawAmount) {
+  if (amount === null) return { amount, check: null };
+  const base = labelled(text, "base"), igv = labelled(text, "igv"), cash = labelled(text, "cash"),
+    change = labelled(text, "change"), retention = labelled(text, "retention"), net = labelled(text, "net");
+  const bases = [base?.value, withoutSpuriousOne(base?.raw)].filter((v) => v !== null && v !== undefined);
+  const rates = igv?.rate ? [igv.rate] : [0.18, 0.10, 0.105];
+  const tests = [];
+  if (bases.length && igv?.value) tests.push((t) => bases.some((b) => near(b + igv.value, t)));
+  // Rate check only without a base: the total implied by the IGV is less precise than base + IGV.
+  if (igv?.value && !bases.length) tests.push((t) => rates.some((r) => near((igv.value * (1 + r)) / r, t, 0.05)));
+  if (cash?.value && change?.value !== null && change?.value !== undefined && cash.value > change.value) tests.push((t) => near(cash.value - change.value, t));
+  if (retention?.value && net?.value && HONORARIOS.test(text)) tests.push((t) => near(net.value + retention.value, t));
+  const words = amountInWords(text);
+  if (words) tests.push((t) => near(words, t, 0.005));
+  // Totals are printed with two decimals; "87.0" means OCR lost a digit.
+  const oneDecimal = /[.,]\d$/.test(String(rawAmount || "").trim());
+  if (!tests.length) return { amount, check: oneDecimal ? "DUDOSO" : null };
+  const score = (t) => tests.filter((fn) => fn(t)).length;
+  const original = score(amount);
+  const alternative = withoutSpuriousOne(rawAmount);
+  if (alternative && score(alternative) > original) return { amount: alternative, check: "AJUSTADO" };
+  // Nothing agrees with the digits read, but the amount in words parsed cleanly: prefer it.
+  if (original === 0 && words && score(words) > 0) return { amount: words, check: "AJUSTADO" };
+  return { amount, check: original > 0 ? "OK" : "NO_CUADRA" };
 }
 
 /** Reads receipt fields from free text (PDF text layer or OCR). */
@@ -212,13 +304,15 @@ export function parseReceiptText(rawText) {
   const text = normalizeText(rawText);
   const sn = extractSeriesNumber(text);
   const total = extractTotal(text);
+  const checked = crossCheckTotal(text, total.amount, total.raw);
   return {
     issuer_ruc: extractIssuerRuc(text),
     document_type: extractDocType(text, sn.series),
     series: sn.series,
     document_number: sn.document_number,
     issue_date: extractDate(text),
-    amount: total.amount,
+    amount: checked.amount,
+    amount_check: checked.check,
     currency: total.currency,
     credit_note: CREDIT_NOTE.test(text),
     raw_text_preview: text.slice(0, 1200),
@@ -236,8 +330,8 @@ export function parseSunatQr(content) {
   if (parts.length < 7) return null;
   const [ruc, rawType, rawSeries, rawNumber, , rawTotal, rawDate] = parts;
   if (!/^\d{11}$/.test(ruc)) return null;
-  const type = rawType.padStart(2, "0");
-  if (!["01", "03", "07", "08"].includes(type)) return null;
+  const type = rawType.toUpperCase().padStart(2, "0");
+  if (!["01", "03", "07", "08", "R1", "R7"].includes(type)) return null;
   const series = rawSeries.toUpperCase();
   if (!/^[A-Z0-9]{4}$/.test(series) || !/^\d{1,8}$/.test(rawNumber)) return null;
   const total = Number(rawTotal.replace(/,/g, ""));
@@ -245,8 +339,8 @@ export function parseSunatQr(content) {
   return {
     issuer_ruc: ruc,
     ruc_valid: isValidRuc(ruc),
-    document_type: ["01", "03"].includes(type) ? type : null,
-    credit_note: ["07", "08"].includes(type),
+    document_type: ["01", "03", "R1"].includes(type) ? type : null,
+    credit_note: ["07", "08", "R7"].includes(type),
     series,
     document_number: rawNumber,
     issue_date: date,

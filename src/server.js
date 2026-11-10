@@ -1056,7 +1056,11 @@ function validateExpenseInput(body) {
   const required = ["project_id","concept_id","producer_id","document_type","issuer_ruc","series","document_number","issue_date","amount"];
   const missing = requiredError(body, required);
   if (missing) return missing;
-  if (!["01","03"].includes(String(body.document_type))) return "Tipo de comprobante inválido.";
+  if (!["01","03","R1"].includes(String(body.document_type))) return "Tipo de comprobante inválido.";
+  // Only natural persons (RUC 10, 15, 16 or 17) issue recibos por honorarios.
+  if (String(body.document_type) === "R1" && !/^1[0567]/.test(String(body.issuer_ruc || "").trim())) {
+    return "Un recibo por honorarios solo lo emite una persona natural (RUC que empieza con 10, 15, 16 o 17).";
+  }
   if (!/^\d{11}$/.test(String(body.issuer_ruc))) return "El RUC emisor debe tener 11 dígitos.";
   if (!/^[A-Za-z0-9]{1,4}$/.test(String(body.series))) return "La serie debe tener hasta 4 caracteres.";
   if (!/^\d{1,8}$/.test(String(body.document_number || "").trim())) return "El número del comprobante debe tener de 1 a 8 dígitos.";

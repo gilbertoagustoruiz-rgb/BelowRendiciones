@@ -51,7 +51,7 @@ export async function financeWorkbook(data) {
   ],[12,32,20,20,22,20,20,22,20,18,24,35]);
   add('Rendiciones',[
     ['ID','Fecha','Productor','Concepto','Tipo','RUC emisor','Serie','Número','Importe PEN','Aprobación','SUNAT','Anticipo ID','Archivo'],
-    ...data.expenses.map(e=>[String(e.id),date(e.issue_date),e.producer_name,e.concept_name,e.document_type==='01'?'FACTURA':'BOLETA',e.issuer_ruc,e.series,e.document_number,amount(e.amount),e.approval_status,e.validation_status,e.advance_id?String(e.advance_id):'',e.file_name]),
+    ...data.expenses.map(e=>[String(e.id),date(e.issue_date),e.producer_name,e.concept_name,({'01':'FACTURA','03':'BOLETA','R1':'RECIBO POR HONORARIOS'})[e.document_type]||e.document_type,e.issuer_ruc,e.series,e.document_number,amount(e.amount),e.approval_status,e.validation_status,e.advance_id?String(e.advance_id):'',e.file_name]),
   ],[12,16,32,35,15,18,12,20,20,20,28,16,45]);
   add('Movimientos',[
     ['ID','Anticipo ID','Solicitante','Tipo','Importe PEN','Referencia','Registrado por','Fecha (Lima)','Constancias'],

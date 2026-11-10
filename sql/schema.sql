@@ -250,7 +250,7 @@ CREATE TABLE IF NOT EXISTS expense_reports (
   project_id BIGINT NOT NULL,
   concept_id BIGINT NOT NULL,
   producer_id BIGINT NOT NULL REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-  document_type VARCHAR(2) NOT NULL CHECK (document_type IN ('01','03')),
+  document_type VARCHAR(2) NOT NULL CHECK (document_type IN ('01','03','R1')),
   issuer_ruc VARCHAR(11) NOT NULL CHECK (issuer_ruc ~ '^[0-9]{11}$'),
   series VARCHAR(4) NOT NULL,
   document_number VARCHAR(20) NOT NULL,
@@ -295,6 +295,10 @@ ALTER TABLE expense_reports ADD CONSTRAINT expense_reports_producer_id_fkey
   FOREIGN KEY (producer_id) REFERENCES personnel(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 ALTER TABLE expense_reports DROP CONSTRAINT IF EXISTS expense_reports_document_number_check;
+-- 01 factura, 03 boleta, R1 recibo por honorarios (codes of SUNAT's integrated query).
+ALTER TABLE expense_reports DROP CONSTRAINT IF EXISTS expense_reports_document_type_check;
+ALTER TABLE expense_reports ADD CONSTRAINT expense_reports_document_type_check CHECK (document_type IN ('01','03','R1'));
+
 -- One-time type change. LPAD(x,8) would also cut numbers longer than 8 digits, so only pad.
 DO $docnumber$
 BEGIN

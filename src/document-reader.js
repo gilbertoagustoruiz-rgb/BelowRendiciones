@@ -146,42 +146,118 @@ async function recognize(png, deadline) {
 }
 
 /**
- * "enhanced": grayscale + contrast stretch at a size Tesseract reads well (~1800–2400 px).
+ * Evens out uneven light (shadows, a dark corner, a dim photo): divides each pixel by the
+ * local brightness of the paper, estimated with a strong blur. Paper becomes white and the
+ * letters keep their contrast everywhere.
+ */
+async function flattenLighting(gray, width, height) {
+  const sigma = Math.max(8, Math.round(Math.max(width, height) / 70));
+  const light = await sharp(gray, { raw: { width, height, channels: 1 } }).blur(sigma).raw().toBuffer();
+  const out = Buffer.alloc(gray.length);
+  for (let i = 0; i < gray.length; i++) {
+    const v = (gray[i] * 255) / Math.max(light[i], 1);
+    // Stretch so faded ink gets darker; the paper saturates at white.
+    out[i] = Math.max(0, Math.min(255, Math.round((v - 60) * 1.35)));
+  }
+  return out;
+}
+
+/**
+ * "enhanced": grayscale at a size Tesseract reads well (~1800–2400 px), lighting evened out,
+ * then rotated (white corners are added after the correction, so they do not affect it).
  * "plain": grayscale only, original size. Sharpening is avoided on purpose: in tests it
  * made Tesseract drop whole lines of the receipt.
  */
 async function prepareForOcr(image, { angle = 0, mode = "enhanced" } = {}) {
   const { width = 0, height = 0 } = await image.metadata(); // image is already materialised
-  let img = image.clone();
-  if (angle) img = img.rotate(angle, { background: "#ffffff" });
-  if (mode === "plain") return img.grayscale().png({ compressionLevel: 3 }).toBuffer();
+  if (mode === "plain") {
+    const plain = await image.clone().grayscale().withMetadata({ density: 300 }).png().toBuffer();
+    return angle ? sharp(plain).rotate(angle, { background: "#ffffff" }).withMetadata({ density: 300 }).png().toBuffer() : plain;
+  }
   const longSide = Math.max(width, height);
   const target = longSide < 1600 ? 1800 : Math.min(longSide, 2400);
-  return img
-    .resize({ width: target, height: target, fit: "inside" })
-    .grayscale()
-    .normalise()
-    .png({ compressionLevel: 3 })
-    .toBuffer();
+  const { data, info } = await image.clone().resize({ width: target, height: target, fit: "inside" })
+    .grayscale().raw().toBuffer({ resolveWithObject: true });
+  const gray = info.channels === 1 ? data : Buffer.from(Array.from({ length: info.width * info.height }, (_, i) => data[i * info.channels]));
+  const flat = await flattenLighting(gray, info.width, info.height);
+  let img = sharp(flat, { raw: { width: info.width, height: info.height, channels: 1 } });
+  if (angle) img = sharp(await img.png().toBuffer()).rotate(angle, { background: "#ffffff" });
+  // Declares a resolution so Tesseract does not guess one (and log a warning).
+  return img.withMetadata({ density: 300 }).png({ compressionLevel: 3 }).toBuffer();
 }
 
 const KEY_FIELDS = ["issuer_ruc", "series", "document_number", "issue_date", "amount"];
 const score = (fields) => KEY_FIELDS.filter((k) => fields[k] !== null && fields[k] !== undefined && fields[k] !== "").length;
 
-/** OCR; when a pass finds little, retries unprocessed and then sideways/upside-down. */
-const OCR_ATTEMPTS = [
-  { angle: 0, mode: "enhanced" }, { angle: 0, mode: "plain" },
-  { angle: 90, mode: "enhanced" }, { angle: 270, mode: "enhanced" }, { angle: 180, mode: "enhanced" },
-];
+/**
+ * Estimates the tilt (±15°) to correct so text lines become horizontal. It collects the edge
+ * pixels of the letters (|Laplacian| over a grayscale copy: the table behind the paper and
+ * uneven light are smooth, so they are ignored) and finds the angle whose projection puts
+ * those pixels into the sharpest rows. Sideways/upside-down photos are left to OCR retries.
+ * Returns the rotation to apply with sharp (degrees, clockwise).
+ */
+export async function estimateRotation(image) {
+  const { data, info } = await image.clone().resize({ width: 900, height: 900, fit: "inside" })
+    .grayscale().raw().toBuffer({ resolveWithObject: true });
+  const { width: w, height: h, channels: ch } = info;
+  const px = (x, y) => data[(y * w + x) * ch];
+  const xs = [], ys = [];
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const lap = 8 * px(x, y) - px(x - 1, y - 1) - px(x, y - 1) - px(x + 1, y - 1) - px(x - 1, y) - px(x + 1, y) - px(x - 1, y + 1) - px(x, y + 1) - px(x + 1, y + 1);
+      if (Math.abs(lap) > 120) { xs.push(x); ys.push(y); }
+    }
+  }
+  if (xs.length < 200) return 0; // too little text to decide
+  const size = Math.ceil(Math.hypot(w, h)) * 2 + 4;
+  const sharpness = (deg) => {
+    const t = (deg * Math.PI) / 180, sin = Math.sin(t), cos = Math.cos(t);
+    const bins = new Float64Array(size);
+    for (let i = 0; i < xs.length; i++) bins[Math.round(ys[i] * cos - xs[i] * sin) + (size >> 1)]++;
+    let sumSq = 0;
+    for (let i = 0; i < size; i++) sumSq += bins[i] * bins[i];
+    return sumSq; // same points at every angle: larger = text concentrated in fewer rows
+  };
+  const flat = sharpness(0);
+  let best = { angle: 0, v: flat };
+  for (let a = -15; a <= 15; a += 0.5) {
+    const v = sharpness(a);
+    if (v > best.v) best = { angle: a, v };
+  }
+  const center = best.angle;
+  for (let a = center - 0.4; a <= center + 0.4; a += 0.1) {
+    const v = sharpness(a);
+    if (v > best.v) best = { angle: a, v };
+  }
+  // Rotating resamples the photo: only straighten when it clearly improves the alignment.
+  if (Math.abs(best.angle) < 0.6 || best.v < flat * 1.05) return 0;
+  return -Math.round(best.angle * 4) / 4;
+}
+
+/**
+ * OCR after straightening the photo. Retries unprocessed, then upside-down and sideways,
+ * keeping the pass with most fields and, on ties, the highest OCR confidence.
+ */
 async function ocrImage(image, deadline) {
+  let skew = 0;
+  try { skew = await estimateRotation(image); } catch (error) { console.error("[lector] enderezado:", error.message); }
+  const attempts = [
+    { angle: skew, mode: "enhanced" }, { angle: skew, mode: "plain" },
+    { angle: skew + 180, mode: "enhanced" }, { angle: skew + 90, mode: "enhanced" }, { angle: skew - 90, mode: "enhanced" },
+  ];
   let best = null;
-  for (const attempt of OCR_ATTEMPTS) {
+  for (const attempt of attempts) {
     if (best && Date.now() > deadline - 8000) break;
     const ocr = await recognize(await prepareForOcr(image, attempt), deadline);
     const fields = parseReceiptText(ocr.text);
-    const current = { ...ocr, fields, score: score(fields) };
-    if (!best || current.score > best.score) best = current;
-    if (best.score >= 3) break;
+    // A total confirmed by the receipt's own figures outweighs a few confidence points.
+    const amountOk = ["OK", "AJUSTADO"].includes(fields.amount_check);
+    const current = { ...ocr, fields, score: score(fields), rank: score(fields) * 100 + (amountOk ? 60 : 0) + (ocr.confidence || 0) };
+    if (!best || current.rank > best.rank) best = current;
+    // Good enough: most fields read with confidence, and the total does not contradict the receipt.
+    const doubtful = ["NO_CUADRA", "DUDOSO"].includes(best.fields.amount_check);
+    if (!doubtful && best.score >= 4 && (best.confidence ?? 0) >= 70) break;
+    if (!doubtful && best.score >= 3 && (best.confidence ?? 0) >= 82) break;
   }
   return best;
 }
@@ -277,15 +353,34 @@ function mergeFields(textFields, qr) {
 
 function buildWarnings(fields, { qr, confidence, source }) {
   const warnings = [];
-  if (fields.credit_note) warnings.push("El documento es una nota de crédito o débito: solo se rinden facturas o boletas.");
+  if (fields.credit_note) warnings.push("El documento es una nota de crédito o débito: solo se rinden facturas, boletas o recibos por honorarios.");
   if (qr && !qr.ruc_valid) warnings.push("El RUC del código QR no es válido; verifica el comprobante.");
   if (fields.currency === "USD") warnings.push("El total parece estar en dólares; las rendiciones se registran en soles (PEN).");
   if (!qr && confidence !== null && confidence < 60) warnings.push("La imagen es poco legible: verifica cada dato o sube una foto más nítida.");
+  // QR amounts are exact; only text/OCR totals are cross-checked.
+  const amountFromQr = qr && qr.amount !== null && qr.amount !== undefined;
+  if (!amountFromQr && fields.amount_check === "AJUSTADO") warnings.push("El importe se corrigió para que cuadre con el IGV, el subtotal o el vuelto del comprobante: verifícalo.");
+  if (!amountFromQr && fields.amount_check === "NO_CUADRA") warnings.push("El importe leído no cuadra con el IGV, el subtotal o el vuelto del comprobante: verifícalo antes de guardar.");
+  // OCR can misread a digit; when nothing on the receipt confirms the total, say so.
+  const ocrAmount = !amountFromQr && fields.amount !== null && fields.amount !== undefined && source !== "PDF_TEXT";
+  if (ocrAmount && !["OK", "AJUSTADO", "NO_CUADRA"].includes(fields.amount_check)) {
+    warnings.push("Verifica el importe: no se pudo comprobar con el IGV, el subtotal ni el monto en letras del comprobante.");
+  }
+  const LABELS = { issuer_ruc: "RUC del emisor", series: "serie", document_number: "número", issue_date: "fecha de emisión", amount: "importe" };
   const missing = KEY_FIELDS.filter((k) => fields[k] === null || fields[k] === undefined || fields[k] === "");
-  if (missing.length) {
-    warnings.push(source === "OCR_PDF" && !qr && missing.length === KEY_FIELDS.length
-      ? "No se pudo leer el PDF escaneado. Sube una foto nítida o completa los campos manualmente."
-      : "Se detectó parte del comprobante. Revisa los campos antes de validar en SUNAT.");
+  if (missing.length === KEY_FIELDS.length && source === "OCR_PDF" && !qr) {
+    warnings.push("No se pudo leer el PDF escaneado. Sube una foto nítida o completa los campos manualmente.");
+  } else if (missing.length === KEY_FIELDS.length) {
+    warnings.push("No se pudo leer el comprobante. Sube una foto más nítida y de frente, o completa los campos manualmente.");
+  } else if (missing.length) {
+    warnings.push("No se pudo leer: " + missing.map((k) => LABELS[k]).join(", ") + ". Complétalo y revisa los demás campos.");
+  }
+  // A misread digit in the year gives a plausible-looking but wrong date.
+  if (fields.issue_date) {
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Lima" }).format(new Date());
+    const yearAgo = String(Number(today.slice(0, 4)) - 1) + today.slice(4);
+    if (fields.issue_date > today) warnings.push("La fecha de emisión leída es futura: verifícala.");
+    else if (fields.issue_date < yearAgo) warnings.push("La fecha de emisión leída tiene más de un año: verifícala.");
   }
   return warnings;
 }
@@ -320,6 +415,9 @@ export async function readReceiptDocument(file) {
 
   const { fields, from_qr } = mergeFields(parseReceiptText(read.text), read.qr);
   const warnings = buildWarnings(fields, read);
+  const note = fields.document_type === "R1"
+    ? "Recibo por honorarios: el importe es el total por honorarios (antes de la retención del 8%), que es el monto que valida SUNAT."
+    : null;
   return {
     source: read.qr ? "QR" : read.source,
     media: file.mimetype === "application/pdf" ? "PDF" : "IMAGE",
@@ -329,5 +427,6 @@ export async function readReceiptDocument(file) {
     fields,
     warning: warnings.length ? warnings.join(" ") : null,
     warnings,
+    note,
   };
 }

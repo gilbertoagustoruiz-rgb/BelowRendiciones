@@ -9,7 +9,10 @@ import { isValidRuc, parseMoney, parseDate, parseReceiptText, parseSunatQr } fro
 
 const EMISOR = '20987654326';   // valid check digit
 const CLIENTE = '20123456786';  // valid check digit
-const QR = `${EMISOR}|01|F001|00012345|190.80|1250.80|2026-10-15|6|${CLIENTE}|aGFzaA==|`;
+// A recent date: the reader warns about receipts older than a year.
+const ISO = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(new Date(Date.now() - 10 * 86400000));
+const DMY = ISO.split('-').reverse().join('/');
+const QR = `${EMISOR}|01|F001|00012345|190.80|1250.80|${ISO}|6|${CLIENTE}|aGFzaA==|`;
 after(closeDocumentReader);
 
 function receipt({ lines, qr = null, width = 1000, height = 1400, font = 38 }) {
@@ -22,8 +25,8 @@ function receipt({ lines, qr = null, width = 1000, height = 1400, font = 38 }) {
   return qr ? sharp(png).composite([{ input: qr, left: Math.round(width / 2 - 110), top: height - 380 }]).png().toBuffer() : png;
 }
 const LINES = ['RESTAURANTE EL SOL S.A.C.', 'AV. LIMA-15 SAN ISIDRO', `RUC: ${EMISOR}`, 'FACTURA ELECTRONICA', 'F001-00012345',
-  'FECHA DE EMISION: 15/10/2026', `CLIENTE RUC: ${CLIENTE}`, 'SUBTOTAL 1,060.00', 'IGV 190.80', 'IMPORTE TOTAL S/ 1,250.80'];
-const EXPECTED = { issuer_ruc: EMISOR, document_type: '01', series: 'F001', document_number: '00012345', issue_date: '2026-10-15', amount: 1250.8 };
+  `FECHA DE EMISION: ${DMY}`, `CLIENTE RUC: ${CLIENTE}`, 'SUBTOTAL 1,060.00', 'IGV 190.80', 'IMPORTE TOTAL S/ 1,250.80'];
+const EXPECTED = { issuer_ruc: EMISOR, document_type: '01', series: 'F001', document_number: '00012345', issue_date: ISO, amount: 1250.8 };
 const pick = (fields) => Object.fromEntries(Object.keys(EXPECTED).map((k) => [k, fields[k]]));
 const pdfOf = (draw) => new Promise((resolve) => {
   const doc = new PDFDocument({ size: 'A4' }); const chunks = [];
@@ -99,7 +102,7 @@ test('PDF escaneado sin texto ni QR se lee con OCR', async () => {
 test('PDF digital: el QR manda sobre el texto, y el texto basta si no hay QR', async () => {
   const qr = await QRCode.toBuffer(QR, { width: 300, margin: 2 });
   // The text layer has a typo in the total; the QR value must win.
-  const withQr = await pdfOf((doc) => { doc.fontSize(12).text(`FACTURA ELECTRONICA F001-00012345\nRUC ${EMISOR}\nFECHA DE EMISION 15/10/2026\nIMPORTE TOTAL S/ 1,205.80`); doc.image(qr, 200, 400, { width: 160 }); });
+  const withQr = await pdfOf((doc) => { doc.fontSize(12).text(`FACTURA ELECTRONICA F001-00012345\nRUC ${EMISOR}\nFECHA DE EMISION ${DMY}\nIMPORTE TOTAL S/ 1,205.80`); doc.image(qr, 200, 400, { width: 160 }); });
   let result = await readReceiptDocument({ buffer: withQr, mimetype: 'application/pdf' });
   assert.equal(result.source, 'QR'); assert.equal(result.fields.amount, 1250.8); assert(result.from_qr.includes('amount'));
   const textOnly = await pdfOf((doc) => doc.fontSize(12).text(LINES.join('\n')));
@@ -120,4 +123,76 @@ test('OCR resiste objetos oscuros al borde de la foto (sombra, mesa, QR cortado)
   const cluttered = await sharp(clean).composite([{ input: blob, left: 0, top: 300 }, { input: blob, left: 0, top: 480 }]).jpeg({ quality: 70 }).toBuffer();
   const result = await readReceiptDocument({ buffer: cluttered, mimetype: 'image/jpeg' });
   assert.deepEqual(pick(result.fields), EXPECTED);
+});
+
+// ---- v1.12: recibos por honorarios, tickets térmicos, fotos inclinadas y controles del importe ----
+import { amountInWords, crossCheckTotal } from '../src/receipt-parser.js';
+import { estimateRotation } from '../src/document-reader.js';
+
+const RH_RUC = '10432187654';   // persona natural, dígito verificador válido
+const BELOW = '20509876542';
+const RH_LINES = ['RECIBO POR HONORARIOS ELECTRÓNICO', 'Nro: E001-245', 'QUISPE MAMANI ROSA ELENA', `RUC: ${RH_RUC}`,
+  'Recibí de: BELOW TRADE S.A.C.', `Identificado con RUC número ${BELOW}`, 'La suma de: MIL QUINIENTOS CON 00/100 SOLES',
+  'Por concepto de: SERVICIO DE ANIMACION DE EVENTO', `Fecha de emisión: ${DMY}`,
+  'Total por honorarios:   1,500.00', 'Retención (8 %) IR:       120.00', 'Total neto recibido:  1,380.00 SOLES'];
+const RH_EXPECTED = { issuer_ruc: RH_RUC, document_type: 'R1', series: 'E001', document_number: '245', issue_date: ISO, amount: 1500 };
+
+/** Phone-like photo: tilt, uneven light and JPEG compression. */
+async function photo(png, { angle = 3, width = 1500 } = {}) {
+  const rotated = await sharp(png).rotate(angle, { background: '#7d7468' }).png().toBuffer();
+  const { width: w, height: h } = await sharp(rotated).metadata();
+  const shade = Buffer.from(`<svg width="${w}" height="${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#9a9288"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>`);
+  return sharp(rotated).composite([{ input: shade, blend: 'multiply' }]).resize({ width }).jpeg({ quality: 62 }).toBuffer();
+}
+
+test('parser: RH, monto en letras y control aritmético del total', () => {
+  const rh = parseReceiptText(RH_LINES.join('\n'));
+  assert.deepEqual(pick(rh), RH_EXPECTED, 'toma el emisor (no el RUC de "Recibí de") y el total por honorarios');
+  assert.equal(rh.amount_check, 'OK');
+  assert.equal(parseSunatQr(`${RH_RUC}|R1|E001|245|0.00|1500.00|${ISO}|6|${BELOW}|`).document_type, 'R1');
+  assert.equal(amountInWords('SON: DOS MIL OCHOCIENTOS TREINTA Y DOS CON 00/100 SOLES'), 2832);
+  assert.equal(amountInWords('SON: UN MILLON DOSCIENTAS MIL CON 50/100'), 1200000.5);
+  assert.equal(amountInWords('SON: DOS MIL OCHOCIEMTOS CON 00/100'), null, 'palabra ilegible: no adivina');
+  const ticket = 'BOLETA B015-1\nOP. GRAVADA S/ 174.07\nIGV 18% S/ 13.33\nTOTAL s/ 187.40\nEFECTIVO S/ 100.00\nVUELTO S/ 12.60';
+  assert.deepEqual([parseReceiptText(ticket).amount, parseReceiptText(ticket).amount_check], [87.4, 'AJUSTADO'], 'quita el "1" que agrega el OCR tras S/');
+  assert.equal(parseReceiptText('BOLETA B1-1\nOP. GRAVADA 127.12\nIGV 18% 22.88\nTOTAL 150.00').amount, 150, 'un total real que empieza en 1 no se toca');
+  assert.equal(crossCheckTotal('OP. GRAVADA 74.07\nIGV 18% 13.33', 87.46, '87.46').check, 'NO_CUADRA', 'seis céntimos de diferencia no cuadran');
+  assert.equal(parseReceiptText('BOLETA B1-1\nTOTAL s/ 87.0').amount_check, 'DUDOSO', 'un solo decimal es sospechoso');
+  assert.equal(parseReceiptText('BOLETA B1-1\nOP. GRAVADA 90.91\nIGV 10% 9.09\nTOTAL 100.00').amount_check, 'OK', 'IGV de restaurantes (10%)');
+});
+
+test('estima la inclinación de la foto para enderezarla', async () => {
+  const page = await receipt({ lines: LINES });
+  for (const angle of [-9, -3.5, 4, 12]) {
+    const tilted = sharp(await sharp(await photo(page, { angle })).png().toBuffer());
+    const estimated = await estimateRotation(tilted);
+    assert(Math.abs(estimated + angle) <= 0.5, `inclinación ${angle}°: estimó corregir ${estimated}°`);
+  }
+  assert.equal(await estimateRotation(sharp(page)), 0, 'una imagen derecha no se rota');
+});
+
+test('foto muy inclinada (9°) se endereza y se lee completa', async () => {
+  const result = await readReceiptDocument({ buffer: await photo(await receipt({ lines: LINES }), { angle: 9 }), mimetype: 'image/jpeg' });
+  assert.deepEqual(pick(result.fields), EXPECTED);
+});
+
+test('recibo por honorarios en PDF de SUNAT y en foto', async () => {
+  const pdf = await pdfOf((doc) => doc.fontSize(11).text(RH_LINES.join('\n')));
+  let result = await readReceiptDocument({ buffer: pdf, mimetype: 'application/pdf' });
+  assert.equal(result.source, 'PDF_TEXT');
+  assert.deepEqual({ ...pick(result.fields), document_number: result.fields.document_number }, RH_EXPECTED);
+  assert.match(result.note, /total por honorarios/);
+  result = await readReceiptDocument({ buffer: await photo(await receipt({ lines: RH_LINES, width: 1400, height: 1500, font: 32 })), mimetype: 'image/jpeg' });
+  assert.deepEqual(pick(result.fields), RH_EXPECTED);
+});
+
+test('boleta de ticket térmico (texto gris, monoespaciado) sin QR', async () => {
+  const lines = ['MINIMARKET DON LUCHO E.I.R.L.', 'RUC: 20611223341', 'BOLETA DE VENTA ELECTRONICA', 'B015-00128733', `FECHA: ${DMY}  HORA: 14:22`,
+    'AGUA SAN LUIS X24    31.90', 'GASEOSA 3L           12.50', 'HIELO BOLSA X3       15.00', '------------------------',
+    'OP. GRAVADA  S/   74.07', 'IGV 18%      S/   13.33', 'TOTAL        S/   87.40', 'EFECTIVO     S/  100.00', 'VUELTO       S/   12.60'];
+  const canvas = createCanvas(576, 900); const g = canvas.getContext('2d');
+  g.fillStyle = '#f2f0ea'; g.fillRect(0, 0, 576, 900); g.fillStyle = '#4a4a4a'; g.font = '20px DejaVu Sans Mono, monospace';
+  lines.forEach((line, i) => g.fillText(line, 24, 50 + i * 32));
+  const result = await readReceiptDocument({ buffer: await photo(canvas.toBuffer('image/png'), { angle: -3, width: 1000 }), mimetype: 'image/jpeg' });
+  assert.deepEqual(pick(result.fields), { issuer_ruc: '20611223341', document_type: '03', series: 'B015', document_number: '00128733', issue_date: ISO, amount: 87.4 });
 });

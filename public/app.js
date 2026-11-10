@@ -146,9 +146,11 @@ async function changeModule(module) {
 }
 
 async function loadCatalogs() {
-  const keys = ["clients","clientprojects","profiles","personnel","concepts"];
+  // Producers cannot open the client/project master: do not request it (avoids a 403).
+  const producer=["PRODUCTOR","SUB PRODUCTOR"].includes(state.currentUser?.profile);
+  const keys = ["clients",...(producer?[]:["clientprojects"]),"profiles","personnel","concepts"];
   const data = await Promise.all(keys.map((key) => request(API + "/" + key).catch((error) => { console.warn("Catálogo no disponible:",key,error); return []; })));
-  state.catalogs = Object.fromEntries(keys.map((key, i) => [key, data[i]]));
+  state.catalogs = { clientprojects: [], ...Object.fromEntries(keys.map((key, i) => [key, data[i]])) };
 }
 
 async function loadProjects() {
@@ -332,7 +334,7 @@ function render() {
       <td><strong>${esc(r.project_code)}</strong><br>${esc(r.project_name)}<br><small>${esc(r.client_name)}</small></td>
       <td>${esc(r.concept_name)}</td>
       <td>${esc(r.producer_name)}</td>
-      <td>${r.document_type === "01" ? "FACTURA" : "BOLETA"}<br>
+      <td>${({"01":"FACTURA","03":"BOLETA","R1":"RECIBO HONORARIOS"})[r.document_type] || esc(r.document_type)}<br>
         <strong>${esc(r.series)}-${esc(r.document_number)}</strong><br><small>RUC ${esc(r.issuer_ruc)}</small></td>
       <td>${formatDateDisplay(r.issue_date)}</td>
       <td>S/ ${Number(r.amount).toFixed(2)}</td>
@@ -498,7 +500,7 @@ async function scanExpenseDocument(file) {
       const summary=detected.length
         ? "Datos leídos desde "+source+": "+detected.join(", ")+"."
         : "No se pudieron detectar datos automáticamente. Completa los campos manualmente.";
-      const advice=result.warning || (result.qr ? "Datos tomados del QR de SUNAT; confirma que correspondan al comprobante." : "Revisa la información antes de guardar.");
+      const advice=[result.warning || (result.qr ? "Datos tomados del QR de SUNAT; confirma que correspondan al comprobante." : "Revisa la información antes de guardar."), result.note].filter(Boolean).join(" ");
       status.textContent=summary+" "+advice;
     }
   } catch(error) {
@@ -540,7 +542,7 @@ function openForm(row=null) {
         (row ? 'Si no seleccionas un archivo nuevo, se conservará el documento actual.' : 'Al seleccionar el archivo, leeremos automáticamente los datos del comprobante.')+
       '</div></div>',
       selectHtml("document_type","Tipo de comprobante",[
-        {value:"01",label:"Factura"},{value:"03",label:"Boleta de Venta"}
+        {value:"01",label:"Factura"},{value:"03",label:"Boleta de Venta"},{value:"R1",label:"Recibo por Honorarios"}
       ],row?.document_type || "01",true),
       inputField("issuer_ruc","RUC del Emisor","text",row?.issuer_ruc || "",'inputmode="numeric" maxlength="11" pattern="\\d{11}"'),
       inputField("series","Serie","text",row?.series || "",'maxlength="4"'),

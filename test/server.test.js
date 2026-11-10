@@ -356,3 +356,14 @@ test('borrar un cliente o concepto en uso da un mensaje claro, no un error inter
   const project = await api('/api/projects/1', admin, { method:'DELETE' });
   assert.equal(project.res.status, 409, JSON.stringify(project.body));
 });
+
+test('se registra un recibo por honorarios solo si el emisor es persona natural', async()=>{
+  const productor = (await login('20000002')).cookie;
+  const concept = (await pool.query('SELECT MIN(id) AS id FROM event_concepts')).rows[0].id;
+  const base = { project_id:1, concept_id:concept, producer_id:2, document_type:'R1', series:'E001', document_number:'245', issue_date:'2026-10-15', amount:'1500.00' };
+  const company = await api('/api/expenses', productor, { method:'POST', body:expenseForm({ ...base, issuer_ruc:'20987654326' }) });
+  assert.equal(company.res.status, 400); assert.match(company.body.error, /persona natural/);
+  const person = await api('/api/expenses', productor, { method:'POST', body:expenseForm({ ...base, issuer_ruc:'10432187654' }) });
+  assert.equal(person.res.status, 201, JSON.stringify(person.body));
+  assert.equal(person.body.row.document_type, 'R1'); assert.equal(person.body.row.document_number, '00000245');
+});

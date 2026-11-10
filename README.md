@@ -13,6 +13,25 @@ Aplicativo web para gestión de proyectos, conceptos de evento y rendición de g
 - Conceptos de Eventos
 - Presupuesto y liquidación (ADMIN / COORDINADOR)
 
+## Recibos por honorarios y lectura robusta (v1.12)
+
+- **Recibo por honorarios (RH, código SUNAT R1)**: ahora se puede rendir junto con facturas y boletas. Solo lo
+  emite una persona natural (RUC que empieza con 10, 15, 16 o 17). El importe es el **total por honorarios**
+  (antes de la retención del 8%), que es el monto que valida SUNAT. El lector reconoce el formato del RH
+  electrónico de SUNAT ("Recibí de…", "Total por honorarios", "Retención", "Total neto recibido").
+- **Fotos enderezadas**: el lector mide la inclinación de las líneas de texto (hasta ±15°) y corrige la foto
+  antes de leerla; también prueba la foto de costado o al revés.
+- **Sombras y fotos oscuras**: se iguala la iluminación del papel antes del OCR.
+- **Control del importe** (cuando no hay QR): el total se compara con base + IGV, la tasa de IGV (18% o 10%),
+  efectivo − vuelto, el monto en letras ("SON: …" / "La suma de: …") y, en RH, total neto + retención.
+  Si el OCR agregó un "1" tras "S/" (error típico de tickets térmicos) se corrige; si no cuadra, se avisa.
+- **Avisos concretos**: el mensaje indica qué campos no se pudieron leer, si el importe no se pudo comprobar
+  y si la fecha leída es futura o tiene más de un año.
+
+Resultados de la prueba con 19 comprobantes simulados (facturas A4, boletas de ticket térmico y RH, en foto de
+celular, WhatsApp, PDF digital y PDF escaneado): los 12 casos normales se leen al 100%; en los 7 casos extremos
+(foto muy borrosa, diminuta, al revés o con el total tapado) cada dato que no se lee bien lleva su aviso.
+
 ## Controles adicionales (v1.11)
 
 - **Perfiles del sistema** (ADMIN, COORDINADOR, PRODUCTOR, SUB PRODUCTOR, EJECUTIVO): no se pueden renombrar

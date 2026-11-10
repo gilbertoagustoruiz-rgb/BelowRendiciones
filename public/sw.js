@@ -1,5 +1,5 @@
 /* Public application assets only. Financial responses and files never enter this cache. */
-const CACHE='below-static-v1.11.0';
+const CACHE='below-static-v1.12.0';
 const ASSETS=['/index.html','/styles.css','/mobile.css','/app.js','/finance.js','/ui.js','/pwa.js','/manifest.webmanifest','/icons/icon.svg','/icons/icon-192.png','/icons/icon-512.png','/icons/apple-touch-icon.png'];
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)));
